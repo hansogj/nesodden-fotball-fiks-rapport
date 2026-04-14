@@ -4,4 +4,8 @@ node_modules/
 test-results/
 playwright-report/
 .env.test
+.env.local
 data/
+tsconfig.tsbuildinfo
+.claude/settings.local.json
+.claude/agent-memory-local/

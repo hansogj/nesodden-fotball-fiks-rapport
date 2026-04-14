@@ -54,8 +54,8 @@ test.describe('Team tabs', () => {
   for (const team of TEAMS) {
     test(`clicking ${team.label} tab loads its matches`, async ({ page }) => {
       await page.getByRole('button', { name: new RegExp(team.label, 'i') }).first().click();
-      // Wait for match section heading to appear (data loaded)
-      await expect(page.getByText(/Kommende kamper/i)).toBeVisible({ timeout: 20000 });
+      // Wait for at least one match card to appear (data loaded)
+      await expect(page.locator('.rounded-xl button').first()).toBeVisible({ timeout: 20000 });
     });
   }
 });
@@ -64,52 +64,44 @@ test.describe('Match cards', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     // Wait for G16-1 matches to load
-    await page.waitForFunction(() => !document.querySelector('.animate-pulse'), { timeout: 15000 });
+    await page.waitForFunction(() => !document.querySelector('.rounded-xl.animate-pulse'), { timeout: 15000 });
   });
 
   test('shows at least one upcoming match card', async ({ page }) => {
-    const cards = page.locator('section').filter({ hasText: 'Kommende kamper' }).locator('button');
+    // Upcoming cards use bg-dark-card; past cards use bg-dark-surface
+    const cards = page.locator('.bg-dark-card button');
     await expect(cards.first()).toBeVisible();
     expect(await cards.count()).toBeGreaterThan(0);
   });
 
   test('each match card shows home and away team names', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     await expect(firstCard.getByText('Hjemmelag')).toBeVisible();
     await expect(firstCard.getByText('Bortelag')).toBeVisible();
   });
 
   test('each match card shows a date', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     // Date format: dd.mm.yyyy
     await expect(firstCard.getByText(/\d{2}\.\d{2}\.\d{4}/)).toBeVisible();
   });
 
   test('each match card shows a time', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     await expect(firstCard.getByText(/\d{2}:\d{2}/)).toBeVisible();
   });
 
   test('each match card shows home/away indicator', async ({ page }) => {
-    const section = page.locator('section').filter({ hasText: 'Kommende kamper' });
-    // At least one "Hjemmekamp" or "Bortekamp" label
-    const homeOrAway = section.getByText(/Hjemmekamp|Bortekamp/);
+    // At least one "Hjemmekamp" or "Bortekamp" label anywhere in the match list
+    const homeOrAway = page.getByText(/Hjemmekamp|Bortekamp/);
     await expect(homeOrAway.first()).toBeVisible();
   });
 
   test('match card shows venue', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     // Venue icon + text (svg + location text)
     const venueText = firstCard.locator('p').filter({ hasText: /\w{3,}/ }).last();
@@ -135,13 +127,11 @@ test.describe('Match card expand / player list', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     // Wait for match list to be populated
-    await expect(page.getByText(/Kommende kamper/i)).toBeVisible({ timeout: 20000 });
+    await expect(page.getByText(/Kommende \(/i)).toBeVisible({ timeout: 20000 });
   });
 
   test('clicking a match card expands to show player sections', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     await firstCard.click();
 
@@ -159,9 +149,7 @@ test.describe('Match card expand / player list', () => {
   });
 
   test('player list shows position badges', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     await firstCard.click();
     await expect(page.locator('.border-t.border-dark-border')).toBeVisible({ timeout: 10000 });
@@ -173,9 +161,7 @@ test.describe('Match card expand / player list', () => {
   });
 
   test('player list shows jersey numbers', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     await firstCard.click();
     await expect(page.locator('.border-t.border-dark-border')).toBeVisible({ timeout: 10000 });
@@ -186,9 +172,7 @@ test.describe('Match card expand / player list', () => {
   });
 
   test('clicking an expanded card again collapses it', async ({ page }) => {
-    const firstCard = page.locator('section')
-      .filter({ hasText: 'Kommende kamper' })
-      .locator('button').first();
+    const firstCard = page.locator('.rounded-xl button').first();
 
     await firstCard.click();
     const expanded = page.locator('.border-t.border-dark-border');
