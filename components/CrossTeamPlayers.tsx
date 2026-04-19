@@ -97,11 +97,16 @@ export function CrossTeamPlayers({
                 .filter((m) => m.result && m.matchReportId)
                 .sort((a, b) => dateMs(b.date) - dateMs(a.date));
 
-              for (const m of played.slice(0, 3)) {
-                const squad = (await fetch(`/api/squads/${m.matchReportId}`).then((r) =>
-                  r.json()
-                )) as { ready: boolean; home: Player[]; away: Player[] };
+              const recent = played.slice(0, 3);
+              const squads = await Promise.all(
+                recent.map((m) =>
+                  fetch(`/api/squads/${m.matchReportId}`).then((r) => r.json() as Promise<{ ready: boolean; home: Player[]; away: Player[] }>)
+                )
+              );
 
+              for (let i = 0; i < recent.length; i++) {
+                const m = recent[i];
+                const squad = squads[i];
                 if (!squad.ready) continue;
 
                 const nesoddenIsHome = m.homeClubId === NESODDEN_CLUB_ID;

@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useCallback, memo } from 'react';
 import type { Match, Player, Team } from '@/lib/types';
 import { TeamEmblem } from './TeamEmblem';
 import { PlayerList } from './PlayerList';
@@ -7,10 +7,12 @@ import { CrossTeamPlayers } from './CrossTeamPlayers';
 
 const NESODDEN_CLUB_ID = '82';
 
-function isPastMatch(date: string): boolean {
+function isPastMatch(date: string, time: string): boolean {
   try {
     const [d, m, y] = date.split('.').map(Number);
-    return new Date(y, m - 1, d) < new Date();
+    const [hh, mm] = time.split(':').map(Number);
+    const matchEnd = new Date(y, m - 1, d, hh + 2, mm);
+    return matchEnd < new Date();
   } catch {
     return false;
   }
@@ -18,7 +20,7 @@ function isPastMatch(date: string): boolean {
 
 interface Props { match: Match; nesoddenTeamId: string; allTeams: Team[] }
 
-export function MatchCard({ match, nesoddenTeamId, allTeams }: Props) {
+export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTeams }: Props) {
   const [open, setOpen] = useState(false);
   const [nesoddenPlayers, setNesoddenPlayers] = useState<Player[] | null>(null);
   const [opponentPlayers, setOpponentPlayers] = useState<Player[] | null>(null);
@@ -29,9 +31,9 @@ export function MatchCard({ match, nesoddenTeamId, allTeams }: Props) {
   const opponentTeamId = isHomeNesodden ? match.awayTeamId : match.homeTeamId;
   const opponentName   = isHomeNesodden ? match.awayTeam   : match.homeTeam;
   const nesoddenName   = isHomeNesodden ? match.homeTeam   : match.awayTeam;
-  const past = isPastMatch(match.date);
+  const past = isPastMatch(match.date, match.time);
 
-  async function toggle() {
+  const toggle = useCallback(async () => {
     if (open) { setOpen(false); return; }
     setOpen(true);
     if (nesoddenPlayers !== null) return;
@@ -68,7 +70,8 @@ export function MatchCard({ match, nesoddenTeamId, allTeams }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, nesoddenPlayers, match.matchReportId, nesoddenTeamId, opponentTeamId]);
 
   return (
     <div className={`rounded-xl border overflow-hidden transition-all ${past ? 'border-dark-border bg-dark-surface opacity-65' : 'border-dark-border bg-dark-card hover:border-nesodden-red/40'}`}>
@@ -82,6 +85,23 @@ export function MatchCard({ match, nesoddenTeamId, allTeams }: Props) {
             {match.isHome
               ? <span className="text-green-400 font-medium">Hjemmekamp</span>
               : <span className="text-blue-400 font-medium">Bortekamp</span>}
+            {match.matchReportId && (
+              <>
+                <span>·</span>
+                <a
+                  href={`https://fiks.fotball.no/FiksWeb/MatchReport/View/${match.matchReportId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-dark-muted hover:text-white transition-colors flex items-center gap-1"
+                >
+                  FIKS
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
+              </>
+            )}
           </div>
           <span className="text-dark-muted text-xs group-hover:text-white transition-colors">
             {open ? '▲' : '▼'}
@@ -169,4 +189,4 @@ export function MatchCard({ match, nesoddenTeamId, allTeams }: Props) {
       )}
     </div>
   );
-}
+});

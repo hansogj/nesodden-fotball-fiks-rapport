@@ -1,20 +1,32 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { Team, Match } from '@/lib/types';
 import { TeamEmblem } from './TeamEmblem';
 import { MatchCard } from './MatchCard';
 
 interface Props { teams: Team[] }
 
-function isPast(date: string) {
+function isPast(date: string, time: string) {
   try {
     const [d, m, y] = date.split('.').map(Number);
-    return new Date(y, m - 1, d) < new Date();
+    const [hh, mm] = time.split(':').map(Number);
+    const matchEnd = new Date(y, m - 1, d, hh + 2, mm);
+    return matchEnd < new Date();
   } catch { return false; }
 }
 
 export function MatchesView({ teams }: Props) {
-  const [activeId, setActiveId] = useState(teams[0]?.fiksId ?? '');
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const paramTeam = searchParams.get('team');
+  const initialId = teams.find((t) => t.fiksId === paramTeam)?.fiksId ?? teams[0]?.fiksId ?? '';
+  const [activeId, setActiveId] = useState(initialId);
+
+  function selectTeam(fiksId: string) {
+    setActiveId(fiksId);
+    router.replace(`?team=${fiksId}`, { scroll: false });
+  }
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -61,16 +73,19 @@ export function MatchesView({ teams }: Props) {
 
   const activeTeam = teams.find((t) => t.fiksId === activeId);
 
-  function matchTimestamp(m: Match): number {
-    try {
-      const [d, mo, y] = m.date.split('.').map(Number);
-      return new Date(y, mo - 1, d).getTime();
-    } catch { return 0; }
-  }
-
-  const sorted   = [...matches].sort((a, b) => matchTimestamp(a) - matchTimestamp(b));
-  const past     = sorted.filter((m) =>  isPast(m.date));
-  const upcoming = sorted.filter((m) => !isPast(m.date));
+  const { past, upcoming } = useMemo(() => {
+    function matchTimestamp(m: Match): number {
+      try {
+        const [d, mo, y] = m.date.split('.').map(Number);
+        return new Date(y, mo - 1, d).getTime();
+      } catch { return 0; }
+    }
+    const sorted   = [...matches].sort((a, b) => matchTimestamp(a) - matchTimestamp(b));
+    return {
+      past:     sorted.filter((m) =>  isPast(m.date, m.time)),
+      upcoming: sorted.filter((m) => !isPast(m.date, m.time)),
+    };
+  }, [matches]);
 
   return (
     <div className="min-h-screen bg-dark-bg">
@@ -131,7 +146,7 @@ export function MatchesView({ teams }: Props) {
             return (
               <button
                 key={team.fiksId}
-                onClick={() => setActiveId(team.fiksId)}
+                onClick={() => selectTeam(team.fiksId)}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
                   active
                     ? 'bg-nesodden-red border-nesodden-red text-white shadow-lg shadow-nesodden-red/20'
