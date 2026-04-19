@@ -62,10 +62,26 @@ The API always returns a `source` field (`'synced'` | `'scraped'` | `'mock'`) so
 1. Loads `.auth/fiks.json` (pre-authenticated session from the `fiks-setup` project)
 2. Navigates to each G16 team's FIKS page, scrapes the 8-column match table
 3. For played matches and matches within the next 7 days, visits `/FiksWeb/MatchReport/View/{matchReportId}`, clicks the Hjemmelag/Bortelag buttons, and extracts squad data with a single `page.evaluate()` call
-4. Extracts `data-home-club-id` / `data-away-club-id` from `#matchreport-container` to build logo URLs: `https://images.fotball.no/clublogos/{clubId}.png`
-5. Writes everything to `data/synced-data.json`
+4. Extracts `data-home-club-id` / `data-away-club-id` from `#matchreport-container` to build logo URLs and populate `homeClubId`/`awayClubId` on all matches
+5. **Opponent pass**: for every opponent club found in Nesodden's schedule, visits `/FiksWeb/Club/View/{clubId}`, finds their G16 teams, scrapes those teams' full match schedules, and scrapes squads for played matches within the last 60 days
+6. Writes everything to `data/synced-data.json`
 
-Sync timeout is 2 minutes. Only past matches and those within 7 days get squad scraping (squads are never registered more than a week ahead).
+Sync timeout is **10 minutes**. The first run is slow (scrapes all opponent squads); subsequent runs are fast because squads with `ready: true` are skipped (incremental guard). Only Nesodden matches within 7 days get near-future squad scraping; opponent squads are only scraped for past matches.
+
+### synced-data.json Structure
+
+```
+{
+  lastSynced: string,
+  matches:         { [nesoddenTeamFiksId]: Match[] },   // Nesodden's 3 teams
+  players:         { [nesoddenTeamFiksId]: Player[] },  // general rosters (fallback)
+  squads:          { [matchReportId]: Squad },           // shared — Nesodden + opponent matches
+  opponentMatches: { [teamFiksId]: Match[] },           // every G16 team for each opponent club
+  opponentTeams:   { [teamFiksId]: OpponentTeam }       // metadata (name, clubId, division)
+}
+```
+
+The `squads` map is keyed by FIKS `matchReportId` and shared across both Nesodden and opponent match entries.
 
 ### FIKS Scraping Details
 
@@ -80,21 +96,36 @@ Sync timeout is 2 minutes. Only past matches and those within 7 days get squad s
 - `.player-row-read-only` → player row (`p:first-child` = jersey, `p:last-child span:first-child` = name)
 - Use a single `page.evaluate()` for the whole extraction — per-element evaluate calls in loops cause 15-minute hangs
 
+**Club page** (`/FiksWeb/Club/View/{clubId}`): links matching `a[href*="/FiksWeb/Team/View/"]` with text matching `/g[\s-]?16|gutter[\s-]?16/i` identify G16 teams.
+
 **Authentication**: Playwright `storageState: '.auth/fiks.json'` handles FIKS session cookies. Regenerate with `npx playwright test --project=fiks-setup`.
+
+### Spillerdeling mellom lag (Cross-team Player Sharing)
+
+Shown in `CrossTeamPlayers` when a match card is expanded and squad data is ready.
+
+**Nesodden side**: checks the last 3 played matches from the other two Nesodden G16 teams via `/api/teams/{fiksId}/matches` + `/api/squads/{matchReportId}`.
+
+**Opponent side**: calls `GET /api/clubs/{clubId}/squads?exclude={matchReportId}`, which searches both `matches` and `opponentMatches` for any team in the same opponent club. Returns `ClubAppearance[]` sorted by date, where each entry includes `teamFiksId`, `teamName`, `division`, and `isHigher` (precomputed by the API by comparing division ranks). The component groups by `teamFiksId` and takes the most recent appearance per sibling team.
+
+`isHigher` is computed in the API by: finding the current opponent's team in `opponentMatches` via the `exclude` matchReportId, looking up its division from `opponentTeams`, then comparing `divisionRank(siblingDivision) < divisionRank(currentDivision)`.
 
 ### Key Files
 
 | File | Role |
 |------|------|
-| `lib/types.ts` | `Team`, `Match`, `Squad`, `Player` interfaces — the single source of type truth |
-| `lib/fiksSync.ts` | Read/write `data/synced-data.json`; no Playwright imports here |
+| `lib/types.ts` | `Team`, `Match`, `Squad`, `Player`, `OpponentTeam`, `ClubAppearance` — single source of type truth |
+| `lib/fiksSync.ts` | Read/write `data/synced-data.json`; defines `SyncedData` interface; mtime-based in-memory cache |
 | `lib/scraper.ts` | Axios+Cheerio live scraper (matches only; players always empty — JS-rendered) |
 | `lib/mockData.ts` | `G16_TEAMS` array (3 teams with FIKS IDs) + mock match/player data |
-| `tests/fiks-sync.spec.ts` | Full Playwright sync; contains all scraping logic and squad extraction |
+| `tests/fiks-sync.spec.ts` | Full Playwright sync; all scraping logic including opponent pass |
 | `app/api/sync/route.ts` | Spawns sync subprocess; `GET` returns status, `POST` triggers sync |
 | `app/api/squads/[matchId]/route.ts` | Serves kamptropp by FIKS internal matchReportId |
+| `app/api/clubs/[clubId]/squads/route.ts` | Cross-team appearance lookup; searches Nesodden + opponent matches |
+| `app/api/teams/[fiksId]/matches/route.ts` | Match list for a Nesodden team (synced → scraped → mock) |
 | `components/MatchesView.tsx` | Main view: team tabs, sorted match list, sync button with spinner |
-| `components/MatchCard.tsx` | Individual match: shows result between teams, lazy-loads kamptropp on expand |
+| `components/MatchCard.tsx` | Individual match: result display, lazy-loads kamptropp on expand |
+| `components/CrossTeamPlayers.tsx` | Player sharing detection across Nesodden teams and opponent sibling teams |
 
 ### Playwright Projects
 
@@ -110,6 +141,7 @@ All projects run with `workers: 1` (sequential) because FIKS sessions cannot be 
 
 ### Constants to Know
 
-- Nesodden club ID: `'82'` (used in `MatchCard` to identify which side is Nesodden)
+- Nesodden club ID: `'82'` (used in `MatchCard` and sync to identify Nesodden's side)
 - G16 team FIKS IDs: G16-1 = `134742`, G16-2 = `6895`, G16-3 = `154500`
 - App port: `3210`
+- Opponent squad lookback: 60 days (only past matches within this window get squad scraping)

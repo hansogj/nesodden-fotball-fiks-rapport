@@ -16,14 +16,24 @@
  *   – .player-row-read-only          → one row per player
  *     p:first-child                  → jersey number
  *     p:last-child span:first-child  → name (+ FIKS code in parens)
+ *
+ * Opponent sync pass (after Nesodden sync):
+ *   – Discovers all opponent clubs from Nesodden match logo URLs
+ *   – For each club: visits /FiksWeb/Club/View/{clubId} to find G16 teams
+ *   – Scrapes those teams' full match schedules
+ *   – Scrapes squads for played matches within the last 60 days
+ *     (incremental: skips matchReportIds already in squads map with ready=true)
+ *   – Stores results in opponentMatches / opponentTeams in synced-data.json
  */
 import { test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { G16_TEAMS } from '../lib/mockData';
-import { writeSyncedData } from '../lib/fiksSync';
-import type { Match, Player, Squad, Team } from '../lib/types';
+import { writeSyncedData, readSyncedData } from '../lib/fiksSync';
+import type { Match, Player, Squad, Team, OpponentTeam } from '../lib/types';
 
 const FIKS_BASE = 'https://fiks.fotball.no';
+const NESODDEN_CLUB_ID = '82';
+const OPPONENT_SQUAD_LOOKBACK_DAYS = 60;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +63,10 @@ function normalisePosition(raw: string): string {
     if (lower.includes(key)) return val;
   }
   return raw || 'Ukjent';
+}
+
+function extractClubIdFromLogoUrl(url: string): string {
+  return url.match(/clublogos\/(\d+)/)?.[1] ?? '';
 }
 
 // ── Match scraping ────────────────────────────────────────────────────────────
@@ -113,6 +127,117 @@ async function scrapeMatches(page: Page, team: Team): Promise<Match[]> {
   }
 
   return matches;
+}
+
+// ── Opponent team match scraping ──────────────────────────────────────────────
+
+/**
+ * Scrape matches for an opponent team. Returns matches and the division string
+ * found on the page (empty string if not found).
+ */
+async function scrapeOpponentTeamMatches(
+  page: Page,
+  teamFiksId: string,
+): Promise<{ matches: Match[]; division: string }> {
+  await page.goto(`${FIKS_BASE}/FiksWeb/Team/View/${teamFiksId}?accordionHistory=collapseTwo`);
+  await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+
+  // Try to extract division/series name from the accordion heading or page title
+  const division = await page.evaluate(() => {
+    const candidates = [
+      '#headingTwo a',
+      '#headingTwo .panel-title',
+      '#headingTwo h3',
+      '#headingTwo h4',
+      '#headingTwo button',
+      '.breadcrumb li:nth-last-child(2) a',
+    ];
+    for (const sel of candidates) {
+      const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
+      if (text.length > 3 && /divisjon|serie|krets/i.test(text)) return text;
+    }
+    // Fall back to anything in headingTwo
+    for (const sel of candidates) {
+      const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
+      if (text.length > 3) return text;
+    }
+    return '';
+  });
+
+  const rows = page.locator('#collapseTwo table tbody tr');
+  const count = await rows.count();
+
+  const matches: Match[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const row = rows.nth(i);
+    const cells = row.locator('td');
+    if (await cells.count() !== 8) continue;
+
+    const c = await Promise.all(Array.from({ length: 8 }, (_, j) => cells.nth(j).innerText()));
+    const cleaned = c.map((t) => t.trim().replace(/\s+/g, ' '));
+
+    const href = await cells.nth(0).locator('a').getAttribute('href').catch(() => null);
+    const matchReportId = href?.match(/MatchReport\/View\/(\d+)/)?.[1] ?? '';
+
+    const homeTeam = cleaned[2];
+    const awayTeam = cleaned[3];
+    const { date, time } = parseDateTime(cleaned[4]);
+    const venue    = cleaned[5];
+    const result   = /\d/.test(cleaned[6]) ? cleaned[6] : undefined;
+
+    if (!homeTeam || !awayTeam || !date) continue;
+
+    matches.push({
+      matchId:       `fiks-${cleaned[0]}`,
+      matchReportId,
+      date,
+      time,
+      homeTeam,
+      homeTeamId:    '', // filled after logo pass
+      homeClubId:    '',
+      homeLogoUrl:   '',
+      awayTeam,
+      awayTeamId:    '', // filled after logo pass
+      awayClubId:    '',
+      awayLogoUrl:   '',
+      venue,
+      tournament:    '',
+      isHome:        false, // filled after logo pass
+      result,
+    });
+  }
+
+  return { matches, division };
+}
+
+// ── Club page scraping ─────────────────────────────────────────────────────────
+
+/**
+ * Scrape a FIKS club page to find all G16 team links.
+ * Returns array of { fiksId, name } for each G16 team found.
+ */
+async function scrapeClubG16Teams(
+  page: Page,
+  clubId: string,
+): Promise<Array<{ fiksId: string; name: string }>> {
+  await page.goto(`${FIKS_BASE}/FiksWeb/Club/View/${clubId}`);
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+  return page.evaluate(() => {
+    const teams: Array<{ fiksId: string; name: string }> = [];
+    document.querySelectorAll('a[href*="/FiksWeb/Team/View/"]').forEach((el) => {
+      const href = (el as HTMLAnchorElement).href;
+      const name = (el as HTMLElement).innerText.trim();
+      const id   = href.match(/Team\/View\/(\d+)/)?.[1];
+      // Match G16 / Gutter 16 / G 16 / G-16 / Gutter-16 etc.
+      if (id && /g[\s\-]?16|gutter[\s\-]?16/i.test(name)) {
+        teams.push({ fiksId: id, name });
+      }
+    });
+    // Deduplicate by fiksId
+    return [...new Map(teams.map((t) => [t.fiksId, t])).values()];
+  });
 }
 
 // ── Squad (kamptropp) scraping ────────────────────────────────────────────────
@@ -235,27 +360,77 @@ async function scrapeClubIds(page: Page, matchReportId: string): Promise<{ homeC
   });
 }
 
+// ── Logo / club-ID pass ───────────────────────────────────────────────────────
+
+/**
+ * Given a clubIdByName map (team name → club ID), apply club IDs and logo URLs
+ * to all matches in the provided match arrays that are still missing them.
+ * Also applies homeTeamId / awayTeamId for the known team (if provided).
+ */
+function applyClubIds(
+  matchArrays: Match[][],
+  clubIdByName: Record<string, string>,
+  knownTeamFiksId?: string,
+  knownClubId?: string,
+): void {
+  for (const matches of matchArrays) {
+    for (const m of matches) {
+      const homeKey = m.homeTeam.toLowerCase();
+      const awayKey = m.awayTeam.toLowerCase();
+
+      if (!m.homeClubId && clubIdByName[homeKey]) {
+        m.homeClubId = clubIdByName[homeKey];
+      }
+      if (!m.awayClubId && clubIdByName[awayKey]) {
+        m.awayClubId = clubIdByName[awayKey];
+      }
+      if (!m.homeLogoUrl && m.homeClubId) {
+        m.homeLogoUrl = `https://images.fotball.no/clublogos/${m.homeClubId}.png`;
+      }
+      if (!m.awayLogoUrl && m.awayClubId) {
+        m.awayLogoUrl = `https://images.fotball.no/clublogos/${m.awayClubId}.png`;
+      }
+
+      // Set teamId for the known team and isHome flag
+      if (knownTeamFiksId && knownClubId) {
+        if (m.homeClubId === knownClubId && !m.homeTeamId) {
+          m.homeTeamId = knownTeamFiksId;
+          m.isHome = true;
+        } else if (m.awayClubId === knownClubId && !m.awayTeamId) {
+          m.awayTeamId = knownTeamFiksId;
+          m.isHome = false;
+        }
+      }
+    }
+  }
+}
+
 // ── Main sync test ────────────────────────────────────────────────────────────
 
 test('sync data from fiks.fotball.no', async ({ page }) => {
-  test.setTimeout(3 * 60 * 1000); // 3 minutes (logo pass adds ~45 s)
+  test.setTimeout(10 * 60 * 1000); // 10 minutes (opponent pass adds significant time on first run)
+
+  // Load existing synced data for incremental squad skipping
+  const existing = readSyncedData();
+
   await page.goto(`${FIKS_BASE}/FiksWeb/`);
   await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
   console.log(`\n[sync] Authenticated. URL: ${page.url()}`);
 
-  const matches: Record<string, Match[]>  = {};
-  const players: Record<string, Player[]> = {};
-  const squads:  Record<string, Squad>    = {};
+  const matches:  Record<string, Match[]>  = {};
+  const players:  Record<string, Player[]> = {};
+  const squads:   Record<string, Squad>    = { ...(existing?.squads ?? {}) };
 
+  const opponentMatches: Record<string, Match[]>    = { ...(existing?.opponentMatches ?? {}) };
+  const opponentTeams:   Record<string, OpponentTeam> = { ...(existing?.opponentTeams ?? {}) };
+
+  // ── 1. Nesodden teams ────────────────────────────────────────────────────────
   for (const team of G16_TEAMS) {
     console.log(`\n[sync] ── ${team.name} ──`);
 
-    // 1. Matches
     matches[team.fiksId] = await scrapeMatches(page, team);
     console.log(`  → ${matches[team.fiksId].length} matches`);
 
-    // 2. Kamptropp — only for played matches + matches within the next 7 days
-    //    (squads are never registered more than a week in advance)
     const now     = Date.now();
     const week_ms = 7 * 24 * 60 * 60 * 1000;
     let squadCount = 0;
@@ -266,12 +441,18 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       const [d, mo, y] = match.date.split('.').map(Number);
       const matchTime  = new Date(y, mo - 1, d).getTime();
       const isPlayed   = match.result != null;
-      // Use midnight of the match day + 48 h so that matches played yesterday
-      // evening (without a result registered yet) are still scraped for squads
       const isNearFuture = matchTime + 48 * 60 * 60 * 1000 > now && matchTime - now <= week_ms;
 
       if (!isPlayed && !isNearFuture) {
-        squads[match.matchReportId] = { ready: false, home: [], away: [] };
+        if (!squads[match.matchReportId]) {
+          squads[match.matchReportId] = { ready: false, home: [], away: [] };
+        }
+        continue;
+      }
+
+      // Incremental: skip squads already scraped and ready
+      if (squads[match.matchReportId]?.ready) {
+        squadCount++;
         continue;
       }
 
@@ -280,7 +461,6 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       const { homeClubId, awayClubId, ...squadData } = squad;
       squads[match.matchReportId] = squadData;
 
-      // Update logo URLs on the match using club IDs from the match report page
       if (homeClubId) match.homeLogoUrl = `https://images.fotball.no/clublogos/${homeClubId}.png`;
       if (awayClubId) match.awayLogoUrl = `https://images.fotball.no/clublogos/${awayClubId}.png`;
 
@@ -293,19 +473,21 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
     console.log(`  → ${squadCount} kamptropper tilgjengelig`);
 
-    // 3. General roster (Fotballtropp) — fallback for players endpoint
     players[team.fiksId] = await scrapePlayers(page, team);
     console.log(`  → ${players[team.fiksId].length} roster players`);
   }
 
-  // ── Logo pass: fill in club IDs for teams not yet covered ───────────────────
-  // Build a teamName → clubId map from matches already visited (have logo URLs)
+  // ── 2. Logo pass for Nesodden matches ────────────────────────────────────────
+  // Build teamName → clubId map from logo URLs already known
   const clubIdByName: Record<string, string> = {};
   for (const teamMatches of Object.values(matches)) {
     for (const m of teamMatches) {
-      const extractId = (url: string) => url.match(/clublogos\/(\d+)/)?.[1];
-      if (m.homeLogoUrl) clubIdByName[m.homeTeam.toLowerCase()] = extractId(m.homeLogoUrl) ?? '';
-      if (m.awayLogoUrl) clubIdByName[m.awayTeam.toLowerCase()] = extractId(m.awayLogoUrl) ?? '';
+      if (m.homeClubId) clubIdByName[m.homeTeam.toLowerCase()] = m.homeClubId;
+      if (m.awayClubId) clubIdByName[m.awayTeam.toLowerCase()] = m.awayClubId;
+      const homeId = extractClubIdFromLogoUrl(m.homeLogoUrl);
+      const awayId = extractClubIdFromLogoUrl(m.awayLogoUrl);
+      if (homeId) clubIdByName[m.homeTeam.toLowerCase()] = homeId;
+      if (awayId) clubIdByName[m.awayTeam.toLowerCase()] = awayId;
     }
   }
 
@@ -325,7 +507,7 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
 
   if (missingRepresentative.size > 0) {
     console.log(`\n[sync] ── Logo pass: fetching club IDs for ${missingRepresentative.size} teams ──`);
-    const visited = new Set<string>(); // matchReportId — skip already-visited pages
+    const visited = new Set<string>();
     for (const [, m] of missingRepresentative) {
       if (visited.has(m.matchReportId!)) continue;
       visited.add(m.matchReportId!);
@@ -337,20 +519,143 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
   }
 
-  // Apply clubIdByName to every match still missing a logo URL
+  // Apply clubIdByName to every Nesodden match — updates logo URLs AND club IDs
+  applyClubIds(Object.values(matches), clubIdByName);
+
+  // ── 3. Opponent sync pass ────────────────────────────────────────────────────
+  // Collect all unique opponent club IDs from Nesodden matches
+  const opponentClubIds = new Set<string>();
   for (const teamMatches of Object.values(matches)) {
     for (const m of teamMatches) {
-      if (!m.homeLogoUrl) {
-        const id = clubIdByName[m.homeTeam.toLowerCase()];
-        if (id) m.homeLogoUrl = `https://images.fotball.no/clublogos/${id}.png`;
-      }
-      if (!m.awayLogoUrl) {
-        const id = clubIdByName[m.awayTeam.toLowerCase()];
-        if (id) m.awayLogoUrl = `https://images.fotball.no/clublogos/${id}.png`;
-      }
+      if (m.homeClubId && m.homeClubId !== NESODDEN_CLUB_ID) opponentClubIds.add(m.homeClubId);
+      if (m.awayClubId && m.awayClubId !== NESODDEN_CLUB_ID) opponentClubIds.add(m.awayClubId);
     }
   }
 
-  writeSyncedData({ lastSynced: new Date().toISOString(), matches, players, squads });
+  console.log(`\n[sync] ── Opponent pass: ${opponentClubIds.size} opponent clubs ──`);
+
+  const now60 = Date.now();
+  const lookback_ms = OPPONENT_SQUAD_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+
+  for (const clubId of opponentClubIds) {
+    console.log(`\n[sync]   Club ${clubId}:`);
+
+    // Discover G16 teams for this club
+    const g16Teams = await scrapeClubG16Teams(page, clubId);
+    if (g16Teams.length === 0) {
+      console.log(`    → no G16 teams found on club page`);
+      continue;
+    }
+    console.log(`    → found ${g16Teams.length} G16 team(s): ${g16Teams.map(t => t.name).join(', ')}`);
+
+    for (const { fiksId: teamFiksId, name: teamDisplayName } of g16Teams) {
+      // Skip Nesodden's own teams
+      if (G16_TEAMS.some((t) => t.fiksId === teamFiksId)) continue;
+
+      process.stdout.write(`    [opp-team] ${teamDisplayName} (${teamFiksId}) … `);
+
+      // Scrape the team's matches and discover division
+      const { matches: teamMatches, division } = await scrapeOpponentTeamMatches(page, teamFiksId);
+      console.log(`${teamMatches.length} matches, division: "${division}"`);
+
+      // Store/update opponent team metadata
+      opponentTeams[teamFiksId] = {
+        fiksId: teamFiksId,
+        name: teamDisplayName,
+        clubId,
+        division,
+      };
+
+      // Build local clubIdByName from any already-known data for this club's matches
+      const localClubIdByName: Record<string, string> = { ...clubIdByName };
+
+      // Collect match report IDs still needing club ID resolution
+      const needClubIdResolution: Map<string, Match> = new Map();
+      for (const m of teamMatches) {
+        if (!m.matchReportId) continue;
+        for (const name of [m.homeTeam, m.awayTeam]) {
+          const key = name.toLowerCase();
+          if (!localClubIdByName[key] && !needClubIdResolution.has(key)) {
+            needClubIdResolution.set(key, m);
+          }
+        }
+      }
+
+      // Resolve missing club IDs via match report pages
+      // (only for played matches with squads we'll scrape anyway, or at most a few extra)
+      const resolutionVisited = new Set<string>();
+      for (const [, m] of needClubIdResolution) {
+        if (!m.matchReportId || resolutionVisited.has(m.matchReportId)) continue;
+        // Only resolve if we actually plan to scrape this match's squad (within lookback)
+        const [d, mo, y] = m.date.split('.').map(Number);
+        const matchTime = new Date(y, mo - 1, d).getTime();
+        const isPlayed = m.result != null;
+        const inLookback = isPlayed && now60 - matchTime <= lookback_ms;
+        if (!inLookback) continue;
+        if (squads[m.matchReportId]?.ready) continue; // already scraped → skip resolution
+
+        resolutionVisited.add(m.matchReportId);
+        // Club IDs will be resolved during the squad scrape below
+      }
+
+      // Scrape squads for recently played matches (incremental: skip already-ready squads)
+      let squadCount = 0;
+      for (const match of teamMatches) {
+        if (!match.matchReportId || !match.result) continue;
+
+        const [d, mo, y] = match.date.split('.').map(Number);
+        const matchTime = new Date(y, mo - 1, d).getTime();
+        if (now60 - matchTime > lookback_ms) continue; // outside lookback window
+
+        // Incremental guard
+        if (squads[match.matchReportId]?.ready) {
+          squadCount++;
+          // Still need to fill logo/club IDs for this match
+          localClubIdByName[match.homeTeam.toLowerCase()] ||= extractClubIdFromLogoUrl(match.homeLogoUrl);
+          localClubIdByName[match.awayTeam.toLowerCase()] ||= extractClubIdFromLogoUrl(match.awayLogoUrl);
+          continue;
+        }
+
+        process.stdout.write(`      [squad] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+        const squad = await scrapeSquad(page, match.matchReportId);
+        const { homeClubId: hId, awayClubId: aId, ...squadData } = squad;
+        squads[match.matchReportId] = squadData;
+
+        if (hId) {
+          match.homeLogoUrl = `https://images.fotball.no/clublogos/${hId}.png`;
+          localClubIdByName[match.homeTeam.toLowerCase()] = hId;
+        }
+        if (aId) {
+          match.awayLogoUrl = `https://images.fotball.no/clublogos/${aId}.png`;
+          localClubIdByName[match.awayTeam.toLowerCase()] = aId;
+        }
+
+        if (squad.ready) {
+          squadCount++;
+          console.log(`✓ home:${squad.home.length} away:${squad.away.length}`);
+        } else {
+          console.log('ikke klar enda');
+        }
+      }
+
+      // Apply club IDs + set teamFiksId / isHome on all matches for this team
+      applyClubIds([teamMatches], localClubIdByName, teamFiksId, clubId);
+
+      // Merge into global clubIdByName for future teams
+      Object.assign(clubIdByName, localClubIdByName);
+
+      opponentMatches[teamFiksId] = teamMatches;
+      console.log(`      → ${squadCount} squads scraped/cached`);
+    }
+  }
+
+  writeSyncedData({
+    lastSynced: new Date().toISOString(),
+    matches,
+    players,
+    squads,
+    opponentMatches,
+    opponentTeams,
+  });
   console.log('\n[sync] ✅ Data saved to data/synced-data.json');
 });

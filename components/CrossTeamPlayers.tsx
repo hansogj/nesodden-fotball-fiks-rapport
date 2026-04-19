@@ -31,7 +31,7 @@ interface NesoddenHit {
 }
 
 interface OpponentHit {
-  nesoddenTeamName: string;
+  siblingTeamName: string;
   matchDate: string;
   matchLabel: string;
   sharedPlayers: Player[];
@@ -139,29 +139,23 @@ export function CrossTeamPlayers({
       );
     }
 
-    // ── Opponent side: check if opponent players appeared vs other Nesodden teams ─
+    // ── Opponent side: check if opponent players appeared for a sibling team ───
     if (hasOpponent) {
       tasks.push(
         fetch(`/api/clubs/${opponentClubId}/squads?exclude=${currentMatchReportId}`)
           .then((r) => r.json())
           .then((appearances: ClubAppearance[]) => {
-            // Group by nesoddenTeamFiksId — take the most recent ready appearance per team
-            const byNesoddenTeam = new Map<string, ClubAppearance>();
+            // Group by sibling teamFiksId — take the most recent ready appearance per sibling team
+            const bySiblingTeam = new Map<string, ClubAppearance>();
             for (const appearance of appearances) {
               if (!appearance.squad.ready) continue;
-              if (!byNesoddenTeam.has(appearance.nesoddenTeamFiksId)) {
-                byNesoddenTeam.set(appearance.nesoddenTeamFiksId, appearance);
+              if (!bySiblingTeam.has(appearance.teamFiksId)) {
+                bySiblingTeam.set(appearance.teamFiksId, appearance);
               }
             }
 
             const hits: OpponentHit[] = [];
-            for (const [nesoddenTeamFiksId, appearance] of byNesoddenTeam) {
-              const nesoddenTeamInMatch = allTeams.find((t) => t.fiksId === nesoddenTeamFiksId);
-              if (!nesoddenTeamInMatch) continue;
-
-              const otherRank = divisionRank(nesoddenTeamInMatch.division);
-              const isHigher = otherRank < currentDivRank;
-
+            for (const [, appearance] of bySiblingTeam) {
               const oppSide =
                 appearance.clubSide === 'home' ? appearance.squad.home : appearance.squad.away;
 
@@ -173,11 +167,11 @@ export function CrossTeamPlayers({
 
               if (shared.length > 0) {
                 hits.push({
-                  nesoddenTeamName: nesoddenTeamInMatch.name,
+                  siblingTeamName: appearance.teamName,
                   matchDate: appearance.date,
                   matchLabel: `${appearance.homeTeam} vs ${appearance.awayTeam}`,
                   sharedPlayers: shared,
-                  isHigher,
+                  isHigher: appearance.isHigher,
                 });
               }
             }
@@ -257,17 +251,17 @@ export function CrossTeamPlayers({
         </div>
       )}
 
-      {/* Opponent players who also played vs another Nesodden team */}
+      {/* Opponent players who also played for a sibling team */}
       {opponentHits.length > 0 && (
         <div className="space-y-3">
           <p className="text-[11px] text-dark-muted uppercase tracking-wider font-medium">
-            Motstanderspillere fra forrige runde
+            Motstanderspillere fra andre lag
           </p>
-          {opponentHits.map(({ nesoddenTeamName, matchDate, matchLabel, sharedPlayers, isHigher }) => (
-            <div key={nesoddenTeamName}>
+          {opponentHits.map(({ siblingTeamName, matchDate, matchLabel, sharedPlayers, isHigher }) => (
+            <div key={siblingTeamName}>
               <p className="text-xs text-dark-muted mb-2">
-                Spilte sist runde mot{' '}
-                <span className="font-medium text-white">{nesoddenTeamName}</span>{' '}
+                Spilte sist runde for{' '}
+                <span className="font-medium text-white">{siblingTeamName}</span>{' '}
                 <span
                   className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${
                     isHigher

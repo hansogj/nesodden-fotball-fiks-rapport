@@ -37,13 +37,24 @@ export interface Player {
   jerseyNumber: number;
 }
 
+export interface OpponentTeam {
+  fiksId: string;
+  name: string;
+  clubId: string;
+  division: string;
+}
+
 export interface ClubAppearance {
   matchReportId: string;
   date: string;
   homeTeam: string;
   awayTeam: string;
-  /** fiksId of the Nesodden G16 team that played in this match */
-  nesoddenTeamFiksId: string;
+  /** fiksId of the team (Nesodden G16 or opponent sibling) that played in this match */
+  teamFiksId: string;
+  teamName: string;
+  division: string;
+  /** Whether the sibling team is at a higher division level than the current match team */
+  isHigher: boolean;
   /** Which side the queried club played on */
   clubSide: 'home' | 'away';
   squad: Squad;
