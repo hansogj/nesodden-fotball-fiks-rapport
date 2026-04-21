@@ -77,7 +77,8 @@ Sync timeout is **10 minutes**. The first run is slow (scrapes all opponent squa
   players:         { [nesoddenTeamFiksId]: Player[] },  // general rosters (fallback)
   squads:          { [matchReportId]: Squad },           // shared — Nesodden + opponent matches
   opponentMatches: { [teamFiksId]: Match[] },           // every G16 team for each opponent club
-  opponentTeams:   { [teamFiksId]: OpponentTeam }       // metadata (name, clubId, division)
+  opponentTeams:   { [teamFiksId]: OpponentTeam },      // metadata (name, clubId, division)
+  clubTeams:       { [ageGroup: string]: Team[] }        // all Nesodden teams grouped by age (e.g. "G16", "J15")
 }
 ```
 
@@ -110,22 +111,34 @@ Shown in `CrossTeamPlayers` when a match card is expanded and squad data is read
 
 `isHigher` is computed in the API by: finding the current opponent's team in `opponentMatches` via the `exclude` matchReportId, looking up its division from `opponentTeams`, then comparing `divisionRank(siblingDivision) < divisionRank(currentDivision)`.
 
+### App Navigation
+
+`HomeRouter` (rendered by `app/page.tsx`) routes based on the `?ageGroup` query param:
+- **No param** → `ClubOverview`: landing page, fetches all Nesodden teams from `GET /api/clubs/82/teams`, displays age-group cards (G16, J15, etc.). Clicking a card pushes `?ageGroup=G16&team=<fiksId>`.
+- **`?ageGroup` present** → `MatchesView`: team tabs, match list, sync button.
+
 ### Key Files
 
 | File | Role |
 |------|------|
-| `lib/types.ts` | `Team`, `Match`, `Squad`, `Player`, `OpponentTeam`, `ClubAppearance` — single source of type truth |
+| `lib/types.ts` | `Team`, `Match`, `Squad`, `Player`, `OpponentTeam`, `ClubAppearance`, `MatchEvent` — single source of type truth |
 | `lib/fiksSync.ts` | Read/write `data/synced-data.json`; defines `SyncedData` interface; mtime-based in-memory cache |
 | `lib/scraper.ts` | Axios+Cheerio live scraper (matches only; players always empty — JS-rendered) |
 | `lib/mockData.ts` | `G16_TEAMS` array (3 teams with FIKS IDs) + mock match/player data |
 | `tests/fiks-sync.spec.ts` | Full Playwright sync; all scraping logic including opponent pass |
+| `tests/helpers/fiks.ts` | Shared Playwright helpers: `extractFiksMatches`, `normaliseTeamName`, `fiksTeamUrl` |
 | `app/api/sync/route.ts` | Spawns sync subprocess; `GET` returns status, `POST` triggers sync |
 | `app/api/squads/[matchId]/route.ts` | Serves kamptropp by FIKS internal matchReportId |
 | `app/api/clubs/[clubId]/squads/route.ts` | Cross-team appearance lookup; searches Nesodden + opponent matches |
+| `app/api/clubs/[clubId]/teams/route.ts` | Teams for a club grouped by age group (synced → live scrape → G16 fallback) |
 | `app/api/teams/[fiksId]/matches/route.ts` | Match list for a Nesodden team (synced → scraped → mock) |
-| `components/MatchesView.tsx` | Main view: team tabs, sorted match list, sync button with spinner |
+| `components/HomeRouter.tsx` | Client router: shows `ClubOverview` or `MatchesView` based on `?ageGroup` |
+| `components/ClubOverview.tsx` | Landing page: age-group cards for all Nesodden teams, sync button |
+| `components/MatchesView.tsx` | Per-age-group view: team tabs, sorted match list |
 | `components/MatchCard.tsx` | Individual match: result display, lazy-loads kamptropp on expand |
 | `components/CrossTeamPlayers.tsx` | Player sharing detection across Nesodden teams and opponent sibling teams |
+| `components/PlayerList.tsx` | Grouped squad list with position badges and match event icons (goals, cards) |
+| `components/TeamEmblem.tsx` | Club logo image with 2-letter initials fallback |
 
 ### Playwright Projects
 
@@ -134,8 +147,10 @@ Shown in `CrossTeamPlayers` when a match card is expanded and squad data is read
 | `fiks-setup` | `fiks-auth.setup.ts` | Must run first; saves `.auth/fiks.json` |
 | `app-ui` | `app.spec.ts` | UI smoke tests; needs dev server running |
 | `data-accuracy` | `accuracy.spec.ts` | Compares app vs FIKS; depends on fiks-setup |
-| `sync` | `fiks-sync.spec.ts` | The data sync worker |
+| `sync` | `fiks-sync.spec.ts` | The data sync worker; depends on fiks-setup |
+| `sync-fresh` | `fiks-sync.spec.ts` | Same sync worker but skips re-auth (reuses existing `.auth/fiks.json`) |
 | `kamptropp` | `kamptropp.spec.ts` | Verifies real squad data for G16-1 vs Grüner (11.04.2026, matchReportId=8977342) |
+| `cross-team` | `cross-team.spec.ts` | CrossTeamPlayers logic; all API calls mocked — no FIKS credentials needed |
 
 All projects run with `workers: 1` (sequential) because FIKS sessions cannot be shared across parallel browser contexts.
 
