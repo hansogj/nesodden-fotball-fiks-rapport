@@ -1,11 +1,10 @@
 import { Suspense } from 'react';
-import { G16_TEAMS } from '@/lib/mockData';
-import { MatchesView } from '@/components/MatchesView';
+import { HomeRouter } from '@/components/HomeRouter';
 
 export default function Home() {
   return (
     <Suspense>
-      <MatchesView teams={G16_TEAMS} />
+      <HomeRouter />
     </Suspense>
   );
 }

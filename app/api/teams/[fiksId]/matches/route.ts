@@ -1,21 +1,35 @@
 import { NextResponse } from 'next/server';
-import { G16_TEAMS, getMockMatches } from '@/lib/mockData';
+import { G16_TEAMS } from '@/lib/mockData';
 import { scrapeTeamMatches } from '@/lib/scraper';
 import { readSyncedData } from '@/lib/fiksSync';
+import type { Team } from '@/lib/types';
+
+function findTeam(fiksId: string, synced: ReturnType<typeof readSyncedData>): Team | undefined {
+  const g16 = G16_TEAMS.find((t) => t.fiksId === fiksId);
+  if (g16) return g16;
+  if (synced?.clubTeams) {
+    for (const teams of Object.values(synced.clubTeams)) {
+      const found = teams.find((t) => t.fiksId === fiksId);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
 
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ fiksId: string }> }
 ) {
   const { fiksId } = await params;
-  const team = G16_TEAMS.find((t) => t.fiksId === fiksId);
-  if (!team) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  const synced = readSyncedData();
 
   // 1. Use synced FIKS data if available
-  const synced = readSyncedData();
   if (synced?.matches[fiksId]?.length) {
     return NextResponse.json({ matches: synced.matches[fiksId], source: 'fiks' });
   }
+
+  const team = findTeam(fiksId, synced);
+  if (!team) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   // 2. Try live scrape from fotball.no
   const scraped = await scrapeTeamMatches(team);
@@ -23,6 +37,5 @@ export async function GET(
     return NextResponse.json({ matches: scraped, source: 'scraper' });
   }
 
-  // 3. Fall back to mock data
-  return NextResponse.json({ matches: getMockMatches(fiksId), source: 'mock' });
+  return NextResponse.json({ matches: [], source: 'none' });
 }

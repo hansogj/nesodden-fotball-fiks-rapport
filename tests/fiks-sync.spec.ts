@@ -240,6 +240,47 @@ async function scrapeClubG16Teams(
   });
 }
 
+/**
+ * Scrape all youth teams for a Nesodden club page and group them by age group.
+ * Returns e.g. { 'G16': [{fiksId, name}, …], 'J15': […], … }
+ */
+async function scrapeClubTeamsByAgeGroup(
+  page: Page,
+  clubId: string,
+): Promise<Record<string, Array<{ fiksId: string; name: string }>>> {
+  await page.goto(`${FIKS_BASE}/FiksWeb/Club/View/${clubId}`);
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+  return page.evaluate(() => {
+    const result: Record<string, Array<{ fiksId: string; name: string }>> = {};
+    document.querySelectorAll('a[href*="/FiksWeb/Team/View/"]').forEach((el) => {
+      const href = (el as HTMLAnchorElement).href;
+      const name = (el as HTMLElement).innerText.trim();
+      const id   = href.match(/Team\/View\/(\d+)/)?.[1];
+      if (!id || !name) return;
+
+      // Boys: G/Gutter + 1-or-2-digit age
+      const boysMatch  = name.match(/\b(?:G|Gutter)\s*-?\s*(\d{1,2})\b/i);
+      // Girls: J/Jenter + 1-or-2-digit age
+      const girlsMatch = name.match(/\b(?:J|Jenter)\s*-?\s*(\d{1,2})\b/i);
+
+      let ageGroup: string | null = null;
+      if      (boysMatch)  ageGroup = `G${boysMatch[1]}`;
+      else if (girlsMatch) ageGroup = `J${girlsMatch[1]}`;
+      if (!ageGroup) return;
+
+      if (!result[ageGroup]) result[ageGroup] = [];
+      result[ageGroup].push({ fiksId: id, name });
+    });
+
+    // Deduplicate by fiksId within each age group
+    for (const ag of Object.keys(result)) {
+      result[ag] = [...new Map(result[ag].map((t: { fiksId: string; name: string }) => [t.fiksId, t])).values()];
+    }
+    return result;
+  });
+}
+
 // ── Squad (kamptropp) scraping ────────────────────────────────────────────────
 
 /** Extract all player rows from the currently visible squad panel in one JS call. */
@@ -410,6 +451,19 @@ function applyClubIds(
 test('sync data from fiks.fotball.no', async ({ page }) => {
   test.setTimeout(10 * 60 * 1000); // 10 minutes (opponent pass adds significant time on first run)
 
+  // Determine which teams to sync:
+  //   SYNC_TEAMS env var (JSON array of Team) → partial sync from the UI
+  //   fallback → G16_TEAMS (full default sync)
+  let teamsToSync: Team[] = G16_TEAMS;
+  if (process.env.SYNC_TEAMS) {
+    try {
+      teamsToSync = JSON.parse(process.env.SYNC_TEAMS) as Team[];
+      console.log(`\n[sync] Partial sync requested for: ${teamsToSync.map(t => t.name).join(', ')}`);
+    } catch {
+      console.warn('[sync] Could not parse SYNC_TEAMS — falling back to G16_TEAMS');
+    }
+  }
+
   // Load existing synced data for incremental squad skipping
   const existing = readSyncedData();
 
@@ -417,15 +471,16 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
   await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
   console.log(`\n[sync] Authenticated. URL: ${page.url()}`);
 
-  const matches:  Record<string, Match[]>  = {};
-  const players:  Record<string, Player[]> = {};
-  const squads:   Record<string, Squad>    = { ...(existing?.squads ?? {}) };
+  // Start from existing data so a partial sync (e.g. only G19) doesn't wipe other age groups
+  const matches:  Record<string, Match[]>  = { ...(existing?.matches  ?? {}) };
+  const players:  Record<string, Player[]> = { ...(existing?.players  ?? {}) };
+  const squads:   Record<string, Squad>    = { ...(existing?.squads   ?? {}) };
 
   const opponentMatches: Record<string, Match[]>    = { ...(existing?.opponentMatches ?? {}) };
-  const opponentTeams:   Record<string, OpponentTeam> = { ...(existing?.opponentTeams ?? {}) };
+  const opponentTeams:   Record<string, OpponentTeam> = { ...(existing?.opponentTeams   ?? {}) };
 
   // ── 1. Nesodden teams ────────────────────────────────────────────────────────
-  for (const team of G16_TEAMS) {
+  for (const team of teamsToSync) {
     console.log(`\n[sync] ── ${team.name} ──`);
 
     matches[team.fiksId] = await scrapeMatches(page, team);
@@ -649,6 +704,25 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
   }
 
+  // ── 4. Discover all Nesodden teams by age group ─────────────────────────────
+  console.log('\n[sync] ── Discovering Nesodden teams by age group ──');
+  const rawTeamsByAgeGroup = await scrapeClubTeamsByAgeGroup(page, NESODDEN_CLUB_ID);
+  const clubTeams: Record<string, typeof G16_TEAMS> = {};
+  for (const [ageGroup, teamList] of Object.entries(rawTeamsByAgeGroup)) {
+    clubTeams[ageGroup] = teamList.map(({ fiksId, name }) => {
+      // Enrich known G16 entries with their hardcoded division/name
+      const known = G16_TEAMS.find((t) => t.fiksId === fiksId);
+      return {
+        fiksId,
+        name:       known?.name ?? name,
+        division:   known?.division ?? '',
+        clubFiksId: NESODDEN_CLUB_ID,
+        logoUrl:    `https://images.fotball.no/clublogos/${NESODDEN_CLUB_ID}.png`,
+      };
+    });
+  }
+  console.log(`  → found age groups: ${Object.keys(clubTeams).sort().join(', ')}`);
+
   writeSyncedData({
     lastSynced: new Date().toISOString(),
     matches,
@@ -656,6 +730,7 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     squads,
     opponentMatches,
     opponentTeams,
+    clubTeams,
   });
   console.log('\n[sync] ✅ Data saved to data/synced-data.json');
 });

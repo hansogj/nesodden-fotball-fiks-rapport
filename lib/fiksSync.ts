@@ -4,7 +4,7 @@
  */
 import fs from 'fs';
 import path from 'path';
-import type { Match, Player, Squad, OpponentTeam } from './types';
+import type { Match, Player, Squad, OpponentTeam, Team } from './types';
 
 export const DATA_FILE = path.join(process.cwd(), 'data', 'synced-data.json');
 
@@ -15,6 +15,7 @@ export interface SyncedData {
   squads: Record<string, Squad>;          // keyed by matchReportId (Nesodden + opponent)
   opponentMatches?: Record<string, Match[]>;   // keyed by opponent team fiksId
   opponentTeams?: Record<string, OpponentTeam>; // keyed by opponent team fiksId
+  clubTeams?: Record<string, Team[]>;          // keyed by ageGroup ('G16', 'J15', …)
 }
 
 // In-memory cache keyed by file mtime — avoids re-parsing on every API request.

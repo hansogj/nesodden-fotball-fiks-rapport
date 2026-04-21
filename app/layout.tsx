@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Nesodden G16 — Kampoversikt 2026',
-  description: 'Kamper og spillere for Nesodden IF G16-lagene sesong 2026',
+  title: 'Nesodden IF — Kampoversikt 2026',
+  description: 'Kamper og spillere for Nesodden IF sine lag i sesong 2026',
   icons: { icon: 'https://images.fotball.no/clublogos/82.png' },
 };
 

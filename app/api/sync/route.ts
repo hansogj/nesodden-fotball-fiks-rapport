@@ -40,8 +40,14 @@ function authIsRecent(): boolean {
   } catch { return false; }
 }
 
-/** POST /api/sync — trigger a full sync from fiks.fotball.no */
-export async function POST() {
+/** POST /api/sync — trigger a sync from fiks.fotball.no
+ *
+ * Body (optional JSON): { teams: Team[] }
+ *   When provided, only those teams are synced (partial sync).
+ *   Existing data for other teams is preserved.
+ *   When omitted, syncs the default G16 teams.
+ */
+export async function POST(req: Request) {
   const creds = getCredentials();
   if (!creds) {
     return NextResponse.json(
@@ -49,6 +55,15 @@ export async function POST() {
       { status: 400 }
     );
   }
+
+  // Parse optional teams from body
+  let syncTeamsEnv: string | undefined;
+  try {
+    const body = await req.json().catch(() => null);
+    if (body?.teams?.length) {
+      syncTeamsEnv = JSON.stringify(body.teams);
+    }
+  } catch { /* no body */ }
 
   // Use sync-fresh (no re-auth) when session is still valid, otherwise full sync
   const project = authIsRecent() ? 'sync-fresh' : 'sync';
@@ -59,7 +74,10 @@ export async function POST() {
       ['playwright', 'test', `--project=${project}`, '--reporter=list'],
       {
         cwd: process.cwd(),
-        env: creds.env,
+        env: {
+          ...creds.env,
+          ...(syncTeamsEnv ? { SYNC_TEAMS: syncTeamsEnv } : {}),
+        },
         stdio: 'inherit',
       }
     );

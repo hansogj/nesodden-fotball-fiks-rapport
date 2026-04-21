@@ -5,7 +5,13 @@ import type { Team, Match } from '@/lib/types';
 import { TeamEmblem } from './TeamEmblem';
 import { MatchCard } from './MatchCard';
 
-interface Props { teams: Team[] }
+const CLUB_ID = '82';
+
+function ageGroupLabel(ag: string): string {
+  const m = ag.match(/^([GJ])(\d{1,2})$/);
+  if (!m) return ag;
+  return m[1] === 'G' ? `Gutter ${parseInt(m[2])}` : `Jenter ${parseInt(m[2])}`;
+}
 
 function isPast(date: string, time: string) {
   try {
@@ -16,17 +22,38 @@ function isPast(date: string, time: string) {
   } catch { return false; }
 }
 
-export function MatchesView({ teams }: Props) {
+export function MatchesView() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const paramTeam = searchParams.get('team');
-  const initialId = teams.find((t) => t.fiksId === paramTeam)?.fiksId ?? teams[0]?.fiksId ?? '';
-  const [activeId, setActiveId] = useState(initialId);
+
+  const activeAgeGroup = searchParams.get('ageGroup') ?? 'G16';
+  const paramTeam = searchParams.get('team') ?? '';
+
+  // ── Teams for this age group ─────────────────────────────────────────────────
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [loadingTeams, setLoadingTeams] = useState(true);
+  const [activeId, setActiveId] = useState(paramTeam);
+
+  useEffect(() => {
+    setLoadingTeams(true);
+    fetch(`/api/clubs/${CLUB_ID}/teams`)
+      .then((r) => r.json())
+      .then((data) => {
+        const group: Team[] = (data.teams ?? {})[activeAgeGroup] ?? [];
+        setTeams(group);
+        const preferred = group.find((t) => t.fiksId === paramTeam)?.fiksId ?? group[0]?.fiksId ?? '';
+        setActiveId(preferred);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingTeams(false));
+  }, [activeAgeGroup]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function selectTeam(fiksId: string) {
     setActiveId(fiksId);
-    router.replace(`?team=${fiksId}`, { scroll: false });
+    router.replace(`?ageGroup=${activeAgeGroup}&team=${fiksId}`, { scroll: false });
   }
+
+  // ── Matches / sync state ─────────────────────────────────────────────────────
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -56,7 +83,11 @@ export function MatchesView({ teams }: Props) {
     setSyncing(true);
     setSyncError(null);
     try {
-      const res = await fetch('/api/sync', { method: 'POST' });
+      const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teams }),
+      });
       const data = await res.json();
       if (data.success) {
         setLastSynced(data.lastSynced);
@@ -80,7 +111,7 @@ export function MatchesView({ teams }: Props) {
         return new Date(y, mo - 1, d).getTime();
       } catch { return 0; }
     }
-    const sorted   = [...matches].sort((a, b) => matchTimestamp(a) - matchTimestamp(b));
+    const sorted = [...matches].sort((a, b) => matchTimestamp(a) - matchTimestamp(b));
     return {
       past:     sorted.filter((m) =>  isPast(m.date, m.time)),
       upcoming: sorted.filter((m) => !isPast(m.date, m.time)),
@@ -92,10 +123,26 @@ export function MatchesView({ teams }: Props) {
       {/* Header */}
       <header className="border-b border-dark-border bg-dark-surface/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-4 flex items-center gap-4">
-          <TeamEmblem logoUrl="https://images.fotball.no/clublogos/82.png" teamName="Nesodden IF" size="lg" />
+          <button onClick={() => router.push('/', { scroll: false })} className="shrink-0">
+            <TeamEmblem logoUrl="https://images.fotball.no/clublogos/82.png" teamName="Nesodden IF" size="lg" />
+          </button>
           <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">Nesodden IF — G16</h1>
-            <p className="text-xs text-dark-muted">Sesong 2026 · Kampoversikt</p>
+            {/* Breadcrumb */}
+            <div className="flex items-center gap-1.5 text-xs text-dark-muted mb-0.5">
+              <button
+                onClick={() => router.push('/', { scroll: false })}
+                className="hover:text-white transition-colors"
+              >
+                Nesodden IF
+              </button>
+              <svg className="w-3 h-3 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+              </svg>
+              <span className="text-white font-medium">{ageGroupLabel(activeAgeGroup)}</span>
+            </div>
+            <h1 className="text-xl font-bold text-white tracking-tight">
+              Nesodden IF — {ageGroupLabel(activeAgeGroup)}
+            </h1>
           </div>
           <div className="ml-auto flex flex-col items-end gap-1">
             <div className="flex items-center gap-2">
@@ -130,9 +177,7 @@ export function MatchesView({ teams }: Props) {
               <span className="px-2 py-1 rounded text-xs font-medium bg-nesodden-red/20 text-nesodden-red border border-nesodden-red/30">2026</span>
             </div>
             {syncError && (
-              <p className="text-[11px] text-red-400 max-w-[240px] text-right leading-tight">
-                {syncError}
-              </p>
+              <p className="text-[11px] text-red-400 max-w-[240px] text-right leading-tight">{syncError}</p>
             )}
           </div>
         </div>
@@ -140,32 +185,42 @@ export function MatchesView({ teams }: Props) {
 
       <main className="max-w-5xl mx-auto px-4 py-8 space-y-8">
         {/* Team selector */}
-        <div className="flex flex-wrap gap-2">
-          {teams.map((team) => {
-            const active = team.fiksId === activeId;
-            return (
-              <button
-                key={team.fiksId}
-                onClick={() => selectTeam(team.fiksId)}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
-                  active
-                    ? 'bg-nesodden-red border-nesodden-red text-white shadow-lg shadow-nesodden-red/20'
-                    : 'bg-dark-card border-dark-border text-gray-400 hover:border-nesodden-red/40 hover:text-white'
-                }`}
-              >
-                <TeamEmblem logoUrl={team.logoUrl} teamName={team.name} size="sm" />
-                <span>{team.name}</span>
-                <span className={`text-xs hidden sm:inline ${active ? 'text-red-200' : 'text-dark-muted'}`}>{team.division}</span>
-              </button>
-            );
-          })}
-        </div>
+        {loadingTeams ? (
+          <div className="flex gap-2">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="h-10 w-40 rounded-lg bg-dark-card border border-dark-border animate-pulse" />
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {teams.map((team) => {
+              const active = team.fiksId === activeId;
+              return (
+                <button
+                  key={team.fiksId}
+                  onClick={() => selectTeam(team.fiksId)}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
+                    active
+                      ? 'bg-nesodden-red border-nesodden-red text-white shadow-lg shadow-nesodden-red/20'
+                      : 'bg-dark-card border-dark-border text-gray-400 hover:border-nesodden-red/40 hover:text-white'
+                  }`}
+                >
+                  <TeamEmblem logoUrl={team.logoUrl} teamName={team.name} size="sm" />
+                  <span>{team.name}</span>
+                  {team.division && (
+                    <span className={`text-xs hidden sm:inline ${active ? 'text-red-200' : 'text-dark-muted'}`}>{team.division}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Active team heading */}
         {activeTeam && (
           <div>
             <h2 className="text-lg font-bold">{activeTeam.name}</h2>
-            <p className="text-sm text-dark-muted">{activeTeam.division}</p>
+            {activeTeam.division && <p className="text-sm text-dark-muted">{activeTeam.division}</p>}
           </div>
         )}
 
@@ -201,14 +256,10 @@ export function MatchesView({ teams }: Props) {
           </div>
         ) : (
           <div className="space-y-3 animate-slide-up">
-            {/* Played matches */}
             {past.map((m) => (
-              <div key={m.matchId} className="opacity-60 hover:opacity-100 transition-opacity">
-                <MatchCard match={m} nesoddenTeamId={activeId} allTeams={teams} />
-              </div>
+              <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} allTeams={teams} />
             ))}
 
-            {/* Divider between past and upcoming */}
             {past.length > 0 && upcoming.length > 0 && (
               <div className="flex items-center gap-3 py-2">
                 <div className="flex-1 h-px bg-dark-border" />
@@ -220,12 +271,12 @@ export function MatchesView({ teams }: Props) {
               </div>
             )}
 
-            {/* Upcoming matches */}
             {upcoming.map((m) => (
-              <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} allTeams={teams} />
+              <div key={m.matchId} className="opacity-60 hover:opacity-100 transition-opacity">
+                <MatchCard match={m} nesoddenTeamId={activeId} allTeams={teams} />
+              </div>
             ))}
 
-            {/* Summary footer */}
             <p className="text-center text-xs text-dark-muted pt-4">
               {matches.length} kamper totalt · {past.length} spilt · {upcoming.length} gjenstår
             </p>
