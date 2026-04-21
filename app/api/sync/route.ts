@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { parse as parseEnv } from 'dotenv';
-import { readSyncedData } from '@/lib/fiksSync';
+import { readClubData, readAllTeamCounts } from '@/lib/fiksSync';
 
 const AUTH_FILE = join(process.cwd(), '.auth', 'fiks.json');
 
@@ -85,41 +85,38 @@ export async function POST(req: Request) {
     proc.on('error', () => resolve(1));
   });
 
-  const data = readSyncedData();
+  const club = readClubData();
 
-  if (exitCode !== 0 || !data) {
+  if (exitCode !== 0 || !club) {
     return NextResponse.json(
       { success: false, error: 'Playwright sync failed — check server terminal for details' },
       { status: 500 }
     );
   }
 
+  const { matchCounts, playerCounts } = readAllTeamCounts();
+
   return NextResponse.json({
     success: true,
-    lastSynced: data.lastSynced,
-    matchCounts: Object.fromEntries(
-      Object.entries(data.matches).map(([id, m]) => [id, m.length])
-    ),
-    playerCounts: Object.fromEntries(
-      Object.entries(data.players).map(([id, p]) => [id, p.length])
-    ),
+    lastSynced: club.lastSynced,
+    matchCounts,
+    playerCounts,
   });
 }
 
 /** GET /api/sync — return current sync status without triggering a new sync */
 export async function GET() {
-  const data = readSyncedData();
-  if (!data) {
+  const club = readClubData();
+  if (!club) {
     return NextResponse.json({ synced: false, lastSynced: null });
   }
+
+  const { matchCounts, playerCounts } = readAllTeamCounts();
+
   return NextResponse.json({
     synced: true,
-    lastSynced: data.lastSynced,
-    matchCounts: Object.fromEntries(
-      Object.entries(data.matches).map(([id, m]) => [id, m.length])
-    ),
-    playerCounts: Object.fromEntries(
-      Object.entries(data.players).map(([id, p]) => [id, p.length])
-    ),
+    lastSynced: club.lastSynced,
+    matchCounts,
+    playerCounts,
   });
 }

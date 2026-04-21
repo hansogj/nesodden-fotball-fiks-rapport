@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readSyncedData } from '@/lib/fiksSync';
+import { readSquad } from '@/lib/fiksSync';
 
 /** GET /api/squads/[matchId] — returns kamptropp for a specific match */
 export async function GET(
@@ -7,8 +7,7 @@ export async function GET(
   { params }: { params: Promise<{ matchId: string }> }
 ) {
   const { matchId } = await params;
-  const synced = readSyncedData();
-  const squad = synced?.squads?.[matchId];
+  const squad = readSquad(matchId);
 
   if (!squad) {
     return NextResponse.json({ ready: false, home: [], away: [] });

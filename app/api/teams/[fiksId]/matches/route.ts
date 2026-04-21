@@ -1,14 +1,15 @@
 import { NextResponse } from 'next/server';
 import { G16_TEAMS } from '@/lib/mockData';
 import { scrapeTeamMatches } from '@/lib/scraper';
-import { readSyncedData } from '@/lib/fiksSync';
+import { findAgeGroup, readTeamData, readClubData } from '@/lib/fiksSync';
 import type { Team } from '@/lib/types';
 
-function findTeam(fiksId: string, synced: ReturnType<typeof readSyncedData>): Team | undefined {
+function findTeam(fiksId: string): Team | undefined {
   const g16 = G16_TEAMS.find((t) => t.fiksId === fiksId);
   if (g16) return g16;
-  if (synced?.clubTeams) {
-    for (const teams of Object.values(synced.clubTeams)) {
+  const club = readClubData();
+  if (club?.clubTeams) {
+    for (const teams of Object.values(club.clubTeams)) {
       const found = teams.find((t) => t.fiksId === fiksId);
       if (found) return found;
     }
@@ -21,14 +22,17 @@ export async function GET(
   { params }: { params: Promise<{ fiksId: string }> }
 ) {
   const { fiksId } = await params;
-  const synced = readSyncedData();
 
   // 1. Use synced FIKS data if available
-  if (synced?.matches[fiksId]?.length) {
-    return NextResponse.json({ matches: synced.matches[fiksId], source: 'fiks' });
+  const ageGroup = findAgeGroup(fiksId);
+  if (ageGroup) {
+    const data = readTeamData(ageGroup, fiksId);
+    if (data?.matches?.length) {
+      return NextResponse.json({ matches: data.matches, source: 'fiks' });
+    }
   }
 
-  const team = findTeam(fiksId, synced);
+  const team = findTeam(fiksId);
   if (!team) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   // 2. Try live scrape from fotball.no

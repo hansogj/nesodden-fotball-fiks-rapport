@@ -1,6 +1,6 @@
 /**
  * Sync test: logs into fiks.fotball.no, scrapes real match data + kamptropp
- * for all three G16 teams, and writes the result to data/synced-data.json.
+ * for all three G16 teams, and writes per-team files under data/teams/{ageGroup}/.
  *
  * Run via:  npm run sync
  *   or:     npx playwright test --project=sync
@@ -23,12 +23,17 @@
  *   – Scrapes those teams' full match schedules
  *   – Scrapes squads for played matches within the last 60 days
  *     (incremental: skips matchReportIds already in squads map with ready=true)
- *   – Stores results in opponentMatches / opponentTeams in synced-data.json
+ *   – Stores results in data/opponents.json (matches + team metadata)
  */
 import { test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { G16_TEAMS } from '../lib/mockData';
-import { writeSyncedData, readSyncedData } from '../lib/fiksSync';
+import {
+  readTeamData, writeTeamData,
+  readSquads, writeSquads,
+  readClubData, writeClubData,
+  readOpponents, writeOpponents,
+} from '../lib/fiksSync';
 import type { Match, Player, Squad, Team, OpponentTeam, MatchEvent, GoalType, CardType } from '../lib/types';
 
 const FIKS_BASE = 'https://fiks.fotball.no';
@@ -286,183 +291,103 @@ async function scrapeClubTeamsByAgeGroup(
 /**
  * Extracts goals and cards from the Hendelser (events) tab of a FIKS MatchReport page.
  *
- * FIKS renders the tab as a vertical timeline where home events appear on the left column
- * and away events on the right. Each event row contains:
- *   - An icon <i class="matchreport-icon-*"> identifying the event type
- *   - A player name in the same side column
- *   - A minute in a centre cell
- *
- * Typical layout (simplified):
- *   <div class="match-events">
- *     <div class="match-event-row">
- *       <div class="col-event-home"><span class="event-player">Last, First</span><i class="matchreport-icon-goal"/></div>
- *       <div class="col-event-time">23'</div>
- *       <div class="col-event-away"></div>
+ * FIKS DOM structure (each event is a div.match-event):
+ *   <div class="match-events events-panel-content">
+ *     <div class="match-event">
+ *       <div class="icon-and-minute">
+ *         <i class="icon icon--events icon-ball--events"></i>
+ *         <span>50'</span>
+ *       </div>
+ *       <div class="event-description">
+ *         <div class="event-text-and-team-name">
+ *           <strong class="event-text">Spillemål (2 - 3)</strong>
+ *           <span class="team-name">Nesodden 3</span>
+ *         </div>
+ *         <div class="event-players">
+ *           <span class="player-number">9. </span>
+ *           <span class="player-name">Noah Viraj Haugen</span>
+ *         </div>
+ *       </div>
  *     </div>
  *   </div>
  *
- * We use a single page.evaluate() so we can inspect the live (post-click) DOM.
+ * Event type is determined from `.event-text` content and icon class:
+ *   - "Spillemål" / icon-ball → normal goal
+ *   - "Straffemål" → penalty goal
+ *   - "Selvmål" → own goal
+ *   - icon-card-yellow → yellow card
+ *   - icon-card-red → red card
+ *
+ * Side (home/away) is determined by matching `.team-name` against the home team
+ * name extracted from the squad tab buttons.
  */
-async function extractMatchEvents(page: Page): Promise<MatchEvent[]> {
+async function extractMatchEvents(page: Page, homeTeamName: string): Promise<MatchEvent[]> {
   // Brief wait for dynamic content to render after tab switch
   await page.waitForTimeout(600);
 
-  return page.evaluate(() => {
-    // ── Helpers ──────────────────────────────────────────────────────────────
-    function iconType(iconClass: string): { type: 'goal' | 'card'; goalType?: string; cardType?: string } | null {
-      const c = iconClass.toLowerCase();
-      // Goals
-      if (c.includes('own-goal') || c.includes('owngoal') || c.includes('selvmål') || c.includes('selfgoal'))
-        return { type: 'goal', goalType: 'own' };
-      if (c.includes('penalty') || c.includes('straffe-mål') || c.includes('straffemål'))
-        return { type: 'goal', goalType: 'penalty' };
-      if (c.includes('goal') || c.includes('mål'))
-        return { type: 'goal', goalType: 'normal' };
-      // Cards
-      if (c.includes('second-yellow') || c.includes('yellow-red') || c.includes('andre-gult'))
-        return { type: 'card', cardType: 'yellow-red' };
-      if (c.includes('red-card') || c.includes('redcard') || c.includes('rødt') || c.includes('utvisning'))
-        return { type: 'card', cardType: 'red' };
-      if (c.includes('yellow') || c.includes('warning') || c.includes('gult') || c.includes('advarsel'))
-        return { type: 'card', cardType: 'yellow' };
-      return null;
-    }
+  return page.evaluate((homeName: string) => {
+    const result: Array<{
+      playerName: string; minute?: number; side: 'home' | 'away';
+      type: 'goal' | 'card'; goalType?: string; cardType?: string;
+    }> = [];
 
-    function cleanName(raw: string): string {
-      return raw.replace(/\s*\(.*?\)\s*$/, '').replace(/\s+/g, ' ').trim();
-    }
+    const rows = document.querySelectorAll('.match-event');
+    if (rows.length === 0) return result;
 
-    function parseMinute(text: string): number | undefined {
-      const m = text.match(/(\d+)/);
-      return m ? parseInt(m[1]) : undefined;
-    }
+    for (const row of rows) {
+      // Player name
+      const playerNameEl = row.querySelector('.player-name');
+      if (!playerNameEl) continue;
+      const playerName = (playerNameEl as HTMLElement).innerText.trim();
+      if (!playerName) continue;
 
-    // ── Strategy A: FIKS standard event rows ─────────────────────────────────
-    // Selectors ranked by specificity — stops at first match that yields results.
-    const rowSelectors = [
-      '.match-events .event-row',
-      '.match-events .match-event-row',
-      '.events-list .event-row',
-      '.event-list .event-row',
-      '.match-event-list > div',
-      '[class*="events"] [class*="event-row"]',
-      '[class*="event-list"] > div',
-    ];
+      // Minute from .icon-and-minute span
+      const minuteEl = row.querySelector('.icon-and-minute span');
+      const minuteText = minuteEl ? (minuteEl as HTMLElement).innerText : '';
+      const minuteMatch = minuteText.match(/(\d+)/);
+      const minute = minuteMatch ? parseInt(minuteMatch[1]) : undefined;
 
-    let rows: Element[] = [];
-    for (const sel of rowSelectors) {
-      const found = [...document.querySelectorAll(sel)];
-      if (found.length > 0) { rows = found; break; }
-    }
+      // Event type from .event-text content
+      const eventTextEl = row.querySelector('.event-text');
+      const eventText = (eventTextEl ? (eventTextEl as HTMLElement).innerText : '').toLowerCase();
 
-    const result: MatchEvent[] = [];
+      // Icon class as fallback
+      const iconEl = row.querySelector('.icon-and-minute i');
+      const iconClass = iconEl?.className?.toLowerCase() ?? '';
 
-    if (rows.length > 0) {
-      for (const row of rows) {
-        const icons = row.querySelectorAll('i[class], [class*="icon"]');
-        let event: { type: 'goal' | 'card'; goalType?: string; cardType?: string } | null = null;
-        for (const icon of icons) {
-          event = iconType(icon.className);
-          if (event) break;
-        }
-        if (!event) continue;
+      let type: 'goal' | 'card';
+      let goalType: string | undefined;
+      let cardType: string | undefined;
 
-        // Minute — look for a cell with digits + optional apostrophe
-        const minuteEl = row.querySelector('[class*="minute"], [class*="time"], [class*="tid"]');
-        const minute = minuteEl
-          ? parseMinute((minuteEl as HTMLElement).innerText)
-          : parseMinute((row as HTMLElement).innerText);
-
-        // Home/away columns
-        const homeCol = row.querySelector('[class*="home"], .col-event-home, .event-home');
-        const awayCol = row.querySelector('[class*="away"], .col-event-away, .event-away');
-
-        function nameFromCol(col: Element | null): string {
-          if (!col) return '';
-          // Find first span/p that is not an icon and has >2 chars
-          const candidates = [...col.querySelectorAll('span, p, a, label')];
-          for (const c of candidates) {
-            if (c.querySelector('i, [class*="icon"]')) continue;
-            const t = cleanName((c as HTMLElement).innerText);
-            if (t.length > 2) return t;
-          }
-          // Fall back to col text itself
-          return cleanName((col as HTMLElement).innerText.split('\n')[0]);
-        }
-
-        const homeName = nameFromCol(homeCol);
-        const awayName = nameFromCol(awayCol);
-
-        if (homeName) {
-          result.push({
-            playerName: homeName,
-            minute,
-            side: 'home',
-            type: event.type,
-            goalType: event.goalType as GoalType | undefined,
-            cardType: event.cardType as CardType | undefined,
-          });
-        }
-        if (awayName) {
-          result.push({
-            playerName: awayName,
-            minute,
-            side: 'away',
-            type: event.type,
-            goalType: event.goalType as GoalType | undefined,
-            cardType: event.cardType as CardType | undefined,
-          });
-        }
+      if (eventText.includes('selvmål') || eventText.includes('own goal')) {
+        type = 'goal'; goalType = 'own';
+      } else if (eventText.includes('straffe') || eventText.includes('penalty')) {
+        type = 'goal'; goalType = 'penalty';
+      } else if (eventText.includes('mål') || iconClass.includes('ball')) {
+        type = 'goal'; goalType = 'normal';
+      } else if (eventText.includes('rødt') || eventText.includes('utvis') || iconClass.includes('card-red')) {
+        type = 'card'; cardType = 'red';
+      } else if (eventText.includes('andre gul') || eventText.includes('2. gul')) {
+        type = 'card'; cardType = 'yellow-red';
+      } else if (eventText.includes('gult') || eventText.includes('advarsel') || iconClass.includes('card')) {
+        type = 'card'; cardType = 'yellow';
+      } else {
+        continue;
       }
 
-      return result;
-    }
+      // Determine side by matching team name against known home team
+      const teamNameEl = row.querySelector('.team-name');
+      const teamName = teamNameEl ? (teamNameEl as HTMLElement).innerText.trim() : '';
+      const home = homeName.toLowerCase();
+      const team = teamName.toLowerCase();
+      const side: 'home' | 'away' = (team === home || home.includes(team) || team.includes(home))
+        ? 'home' : 'away';
 
-    // ── Strategy B: scan for any icon in event panel, infer side from position ─
-    // Fallback when class names don't match Strategy A patterns.
-    const panel = document.querySelector(
-      '[class*="hendelser"], [class*="events-panel"], .tab-pane.active, .content-area > div:nth-child(2)'
-    );
-    if (!panel) return [];
-
-    const allIcons = panel.querySelectorAll('i[class]');
-    for (const icon of allIcons) {
-      const evt = iconType(icon.className);
-      if (!evt) continue;
-
-      // Walk up to find the row-level container
-      let row: Element | null = icon.parentElement;
-      while (row && row !== panel && !row.className.includes('row') && !row.className.includes('event')) {
-        row = row.parentElement;
-      }
-      if (!row || row === panel) continue;
-
-      const rowText = (row as HTMLElement).innerText;
-      const minute = parseMinute(rowText);
-
-      // Heuristic: find sibling text nodes / spans for player name
-      const parent = icon.parentElement as HTMLElement | null;
-      const textNode = parent?.innerText?.replace(/\d+['`']/g, '').trim().split('\n')[0] ?? '';
-      const playerName = cleanName(textNode);
-      if (!playerName || playerName.length < 3) continue;
-
-      // Side heuristic: if the icon's parent is in the left half of the row, it's home
-      const iconRect = icon.getBoundingClientRect();
-      const rowRect = (row as HTMLElement).getBoundingClientRect();
-      const side: 'home' | 'away' = iconRect.left < rowRect.left + rowRect.width / 2 ? 'home' : 'away';
-
-      result.push({
-        playerName,
-        minute,
-        side,
-        type: evt.type,
-        goalType: evt.goalType as GoalType | undefined,
-        cardType: evt.cardType as CardType | undefined,
-      });
+      result.push({ playerName, minute, side, type, goalType, cardType });
     }
 
     return result;
-  });
+  }, homeTeamName) as Promise<MatchEvent[]>;
 }
 
 // ── Squad (kamptropp) scraping ────────────────────────────────────────────────
@@ -516,7 +441,7 @@ interface SquadWithClubs extends Squad {
   awayClubId: string;
 }
 
-async function scrapeSquad(page: Page, matchReportId: string): Promise<SquadWithClubs> {
+async function scrapeSquad(page: Page, matchReportId: string, homeTeamName: string): Promise<SquadWithClubs> {
   await page.goto(`${FIKS_BASE}/FiksWeb/MatchReport/View/${matchReportId}`);
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
@@ -549,7 +474,7 @@ async function scrapeSquad(page: Page, matchReportId: string): Promise<SquadWith
   const hendelsesLink = page.locator('nav.tab-options a.option2, nav.tab-options a:nth-child(2)').first();
   if (await hendelsesLink.count() > 0) {
     await hendelsesLink.click();
-    events = await extractMatchEvents(page);
+    events = await extractMatchEvents(page, homeTeamName);
     if (events.length > 0) {
       console.log(`    [events] ${events.length} events: ${events.filter(e=>e.type==='goal').length} goals, ${events.filter(e=>e.type==='card').length} cards`);
     }
@@ -659,33 +584,59 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
   }
 
-  // Load existing synced data for incremental squad skipping
-  const existing = readSyncedData();
+  // Load existing shared data for incremental skipping
+  const squads: Record<string, Squad> = { ...readSquads() };
+  const existingOpponents = readOpponents();
+  const opponentMatches: Record<string, Match[]>    = { ...(existingOpponents?.matches ?? {}) };
+  const opponentTeams:   Record<string, OpponentTeam> = { ...(existingOpponents?.teams   ?? {}) };
 
   await page.goto(`${FIKS_BASE}/FiksWeb/`);
   await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
   console.log(`\n[sync] Authenticated. URL: ${page.url()}`);
 
-  // Start from existing data so a partial sync (e.g. only G19) doesn't wipe other age groups
-  const matches:  Record<string, Match[]>  = { ...(existing?.matches  ?? {}) };
-  const players:  Record<string, Player[]> = { ...(existing?.players  ?? {}) };
-  const squads:   Record<string, Squad>    = { ...(existing?.squads   ?? {}) };
+  // ── 0. Discover all Nesodden teams by age group (needed for file layout) ────
+  console.log('\n[sync] ── Discovering Nesodden teams by age group ──');
+  const rawTeamsByAgeGroup = await scrapeClubTeamsByAgeGroup(page, NESODDEN_CLUB_ID);
+  const clubTeams: Record<string, typeof G16_TEAMS> = {};
+  for (const [ageGroup, teamList] of Object.entries(rawTeamsByAgeGroup)) {
+    clubTeams[ageGroup] = teamList.map(({ fiksId, name }) => {
+      const known = G16_TEAMS.find((t) => t.fiksId === fiksId);
+      return {
+        fiksId,
+        name:       known?.name ?? name,
+        division:   known?.division ?? '',
+        clubFiksId: NESODDEN_CLUB_ID,
+        logoUrl:    `https://images.fotball.no/clublogos/${NESODDEN_CLUB_ID}.png`,
+      };
+    });
+  }
+  console.log(`  → found age groups: ${Object.keys(clubTeams).sort().join(', ')}`);
+  writeClubData({ clubTeams, lastSynced: new Date().toISOString() });
 
-  const opponentMatches: Record<string, Match[]>    = { ...(existing?.opponentMatches ?? {}) };
-  const opponentTeams:   Record<string, OpponentTeam> = { ...(existing?.opponentTeams   ?? {}) };
+  // Build fiksId → ageGroup lookup
+  const ageGroupOf: Record<string, string> = {};
+  for (const [ag, teams] of Object.entries(clubTeams)) {
+    for (const t of teams) ageGroupOf[t.fiksId] = ag;
+  }
+  // Fallback for SYNC_TEAMS teams not yet in clubTeams (e.g. first sync)
+  for (const t of G16_TEAMS) ageGroupOf[t.fiksId] ??= 'G16';
+
+  // Collect all Nesodden team matches for logo pass (includes non-synced teams from disk)
+  const allNesoddenMatches: Record<string, Match[]> = {};
 
   // ── 1. Nesodden teams ────────────────────────────────────────────────────────
   for (const team of teamsToSync) {
-    console.log(`\n[sync] ── ${team.name} ──`);
+    const ag = ageGroupOf[team.fiksId] ?? 'unknown';
+    console.log(`\n[sync] ── ${team.name} (${ag}) ──`);
 
-    matches[team.fiksId] = await scrapeMatches(page, team);
-    console.log(`  → ${matches[team.fiksId].length} matches`);
+    const teamMatches = await scrapeMatches(page, team);
+    console.log(`  → ${teamMatches.length} matches`);
 
     const now     = Date.now();
     const week_ms = 7 * 24 * 60 * 60 * 1000;
     let squadCount = 0;
 
-    for (const match of matches[team.fiksId]) {
+    for (const match of teamMatches) {
       if (!match.matchReportId) continue;
 
       const [d, mo, y] = match.date.split('.').map(Number);
@@ -707,7 +658,7 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       }
 
       process.stdout.write(`  [squad] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
-      const squad = await scrapeSquad(page, match.matchReportId);
+      const squad = await scrapeSquad(page, match.matchReportId, match.homeTeam);
       const { homeClubId, awayClubId, ...squadData } = squad;
       squads[match.matchReportId] = squadData;
 
@@ -723,14 +674,34 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
     console.log(`  → ${squadCount} kamptropper tilgjengelig`);
 
-    players[team.fiksId] = await scrapePlayers(page, team);
-    console.log(`  → ${players[team.fiksId].length} roster players`);
+    const teamPlayers = await scrapePlayers(page, team);
+    console.log(`  → ${teamPlayers.length} roster players`);
+
+    // Write per-team file immediately (partial progress saved)
+    writeTeamData(ag, team.fiksId, {
+      matches: teamMatches,
+      players: teamPlayers,
+      lastSynced: new Date().toISOString(),
+    });
+    console.log(`  → saved to data/teams/${ag}/${team.fiksId}.json`);
+
+    allNesoddenMatches[team.fiksId] = teamMatches;
   }
 
   // ── 2. Logo pass for Nesodden matches ────────────────────────────────────────
-  // Build teamName → clubId map from logo URLs already known
+  // Include matches from non-synced teams (already on disk) for a complete club-ID map
+  for (const [ag, teams] of Object.entries(clubTeams)) {
+    for (const t of teams) {
+      if (allNesoddenMatches[t.fiksId]) continue; // already loaded above
+      const existing = readTeamData(ag, t.fiksId);
+      if (existing?.matches?.length) {
+        allNesoddenMatches[t.fiksId] = existing.matches;
+      }
+    }
+  }
+
   const clubIdByName: Record<string, string> = {};
-  for (const teamMatches of Object.values(matches)) {
+  for (const teamMatches of Object.values(allNesoddenMatches)) {
     for (const m of teamMatches) {
       if (m.homeClubId) clubIdByName[m.homeTeam.toLowerCase()] = m.homeClubId;
       if (m.awayClubId) clubIdByName[m.awayTeam.toLowerCase()] = m.awayClubId;
@@ -743,7 +714,7 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
 
   // Find one representative match per team still missing a logo
   const missingRepresentative: Map<string, Match> = new Map();
-  for (const teamMatches of Object.values(matches)) {
+  for (const teamMatches of Object.values(allNesoddenMatches)) {
     for (const m of teamMatches) {
       if (!m.matchReportId) continue;
       for (const name of [m.homeTeam, m.awayTeam]) {
@@ -770,12 +741,26 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
   }
 
   // Apply clubIdByName to every Nesodden match — updates logo URLs AND club IDs
-  applyClubIds(Object.values(matches), clubIdByName);
+  applyClubIds(Object.values(allNesoddenMatches), clubIdByName);
+
+  // Re-write team files with updated club IDs from logo pass
+  for (const team of teamsToSync) {
+    const ag = ageGroupOf[team.fiksId] ?? 'unknown';
+    if (allNesoddenMatches[team.fiksId]) {
+      const existing = readTeamData(ag, team.fiksId);
+      if (existing) {
+        writeTeamData(ag, team.fiksId, {
+          ...existing,
+          matches: allNesoddenMatches[team.fiksId],
+        });
+      }
+    }
+  }
 
   // ── 3. Opponent sync pass ────────────────────────────────────────────────────
   // Collect all unique opponent club IDs from Nesodden matches
   const opponentClubIds = new Set<string>();
-  for (const teamMatches of Object.values(matches)) {
+  for (const teamMatches of Object.values(allNesoddenMatches)) {
     for (const m of teamMatches) {
       if (m.homeClubId && m.homeClubId !== NESODDEN_CLUB_ID) opponentClubIds.add(m.homeClubId);
       if (m.awayClubId && m.awayClubId !== NESODDEN_CLUB_ID) opponentClubIds.add(m.awayClubId);
@@ -832,20 +817,17 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       }
 
       // Resolve missing club IDs via match report pages
-      // (only for played matches with squads we'll scrape anyway, or at most a few extra)
       const resolutionVisited = new Set<string>();
       for (const [, m] of needClubIdResolution) {
         if (!m.matchReportId || resolutionVisited.has(m.matchReportId)) continue;
-        // Only resolve if we actually plan to scrape this match's squad (within lookback)
         const [d, mo, y] = m.date.split('.').map(Number);
         const matchTime = new Date(y, mo - 1, d).getTime();
         const isPlayed = m.result != null;
         const inLookback = isPlayed && now60 - matchTime <= lookback_ms;
         if (!inLookback) continue;
-        if (squads[m.matchReportId]?.ready) continue; // already scraped → skip resolution
+        if (squads[m.matchReportId]?.ready) continue;
 
         resolutionVisited.add(m.matchReportId);
-        // Club IDs will be resolved during the squad scrape below
       }
 
       // Scrape squads for recently played matches (incremental: skip already-ready squads)
@@ -867,7 +849,7 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
         }
 
         process.stdout.write(`      [squad] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
-        const squad = await scrapeSquad(page, match.matchReportId);
+        const squad = await scrapeSquad(page, match.matchReportId, match.homeTeam);
         const { homeClubId: hId, awayClubId: aId, ...squadData } = squad;
         squads[match.matchReportId] = squadData;
 
@@ -899,33 +881,12 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
   }
 
-  // ── 4. Discover all Nesodden teams by age group ─────────────────────────────
-  console.log('\n[sync] ── Discovering Nesodden teams by age group ──');
-  const rawTeamsByAgeGroup = await scrapeClubTeamsByAgeGroup(page, NESODDEN_CLUB_ID);
-  const clubTeams: Record<string, typeof G16_TEAMS> = {};
-  for (const [ageGroup, teamList] of Object.entries(rawTeamsByAgeGroup)) {
-    clubTeams[ageGroup] = teamList.map(({ fiksId, name }) => {
-      // Enrich known G16 entries with their hardcoded division/name
-      const known = G16_TEAMS.find((t) => t.fiksId === fiksId);
-      return {
-        fiksId,
-        name:       known?.name ?? name,
-        division:   known?.division ?? '',
-        clubFiksId: NESODDEN_CLUB_ID,
-        logoUrl:    `https://images.fotball.no/clublogos/${NESODDEN_CLUB_ID}.png`,
-      };
-    });
-  }
-  console.log(`  → found age groups: ${Object.keys(clubTeams).sort().join(', ')}`);
+  // ── 4. Write shared data ────────────────────────────────────────────────────
+  writeSquads(squads);
+  console.log(`\n[sync] ✅ Squads saved to data/squads.json (${Object.keys(squads).length} entries)`);
 
-  writeSyncedData({
-    lastSynced: new Date().toISOString(),
-    matches,
-    players,
-    squads,
-    opponentMatches,
-    opponentTeams,
-    clubTeams,
-  });
-  console.log('\n[sync] ✅ Data saved to data/synced-data.json');
+  writeOpponents({ matches: opponentMatches, teams: opponentTeams });
+  console.log(`[sync] ✅ Opponents saved to data/opponents.json (${Object.keys(opponentMatches).length} teams)`);
+
+  console.log('[sync] ✅ Sync complete');
 });

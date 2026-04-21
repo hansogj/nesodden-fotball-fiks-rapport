@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readSyncedData, writeSyncedData } from '@/lib/fiksSync';
+import { readClubData, writeClubData } from '@/lib/fiksSync';
 import { G16_TEAMS, NESODDEN_CLUB_ID } from '@/lib/mockData';
 import { scrapeClubTeams } from '@/lib/scraper';
 import type { Team } from '@/lib/types';
@@ -32,8 +32,8 @@ function enrich(teams: Record<string, Team[]>, clubId: string): Record<string, T
  * Returns all known teams for a club, grouped by age group.
  *
  * Priority:
- *  1. synced-data.json  clubTeams  (populated by npm run sync)
- *  2. Live scrape from fotball.no  (written back to synced-data.json as cache)
+ *  1. club.json  clubTeams  (populated by npm run sync)
+ *  2. Live scrape from fotball.no  (written back to club.json as cache)
  *  3. Hardcoded G16 fallback for Nesodden
  *
  * Response: { ageGroups: string[], teams: Record<string, Team[]>, source: string }
@@ -43,12 +43,12 @@ export async function GET(
   { params }: { params: Promise<{ clubId: string }> }
 ) {
   const { clubId } = await params;
-  const synced = readSyncedData();
+  const club = readClubData();
 
   // 1. Synced data (from npm run sync) — richest data, use directly
-  if (synced?.clubTeams && Object.keys(synced.clubTeams).length > 0) {
-    const ageGroups = sortAgeGroups(Object.keys(synced.clubTeams));
-    return NextResponse.json({ ageGroups, teams: synced.clubTeams, source: 'synced' });
+  if (club?.clubTeams && Object.keys(club.clubTeams).length > 0) {
+    const ageGroups = sortAgeGroups(Object.keys(club.clubTeams));
+    return NextResponse.json({ ageGroups, teams: club.clubTeams, source: 'synced' });
   }
 
   // 2. Live scrape from fotball.no
@@ -56,18 +56,9 @@ export async function GET(
   if (Object.keys(scraped).length > 0) {
     const enriched = enrich(scraped, clubId);
 
-    // Cache to synced-data.json so the next load is instant
+    // Cache to club.json so the next load is instant
     try {
-      const existing = readSyncedData();
-      writeSyncedData({
-        lastSynced:      existing?.lastSynced      ?? new Date().toISOString(),
-        matches:         existing?.matches         ?? {},
-        players:         existing?.players         ?? {},
-        squads:          existing?.squads          ?? {},
-        opponentMatches: existing?.opponentMatches ?? {},
-        opponentTeams:   existing?.opponentTeams   ?? {},
-        clubTeams:       enriched,
-      });
+      writeClubData({ clubTeams: enriched, lastSynced: new Date().toISOString() });
     } catch {
       // non-fatal — just don't cache
     }

@@ -47,7 +47,7 @@ export default defineConfig({
       },
     },
 
-    // On-demand sync: scrape real data from fiks.fotball.no → data/synced-data.json
+    // On-demand sync: scrape real data from fiks.fotball.no → data/teams/{ageGroup}/*.json
     {
       name: 'sync',
       testMatch: '**/fiks-sync.spec.ts',
@@ -73,6 +73,16 @@ export default defineConfig({
       name: 'kamptropp',
       testMatch: '**/kamptropp.spec.ts',
       use: { ...devices['Desktop Chrome'] },
+    },
+
+    // Debug helpers — one-off investigations, not part of normal CI
+    {
+      name: 'debug',
+      testMatch: '**/debug-*.spec.ts',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/fiks.json',
+      },
     },
 
     // Cross-team player detection: all API calls mocked, no FIKS credentials needed

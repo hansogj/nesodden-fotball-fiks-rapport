@@ -13,7 +13,7 @@ npm run dev           # Dev server on port 3210
 npm run build         # Production build
 npm run start         # Production server on port 3210 (requires build first)
 
-npm run sync          # Scrape FIKS → data/synced-data.json  (requires .env.test with FIKS credentials)
+npm run sync          # Scrape FIKS → data/teams/{ageGroup}/{fiksId}.json  (requires .env.test with FIKS credentials)
 npm test              # Playwright UI tests (app-ui project)
 npm run test:accuracy # FIKS auth + data accuracy comparison
 npm run test:kamptropp # Verify squad endpoint returns real FIKS data (not mock)
@@ -49,7 +49,7 @@ Both files are gitignored. The `.env.test.example` file documents this.
 
 Three tiers, applied in order per API request:
 
-1. **Synced data** — `data/synced-data.json` (written by `npm run sync`)
+1. **Synced data** — `data/teams/`, `data/squads.json`, `data/opponents.json`, `data/club.json` (written by `npm run sync`)
 2. **Live scrape** — Axios + Cheerio against fotball.no (HTML, not JS-rendered; players always return empty this way)
 3. **Mock data** — `lib/mockData.ts` hardcoded fallback
 
@@ -64,25 +64,38 @@ The API always returns a `source` field (`'synced'` | `'scraped'` | `'mock'`) so
 3. For played matches and matches within the next 7 days, visits `/FiksWeb/MatchReport/View/{matchReportId}`, clicks the Hjemmelag/Bortelag buttons, and extracts squad data with a single `page.evaluate()` call
 4. Extracts `data-home-club-id` / `data-away-club-id` from `#matchreport-container` to build logo URLs and populate `homeClubId`/`awayClubId` on all matches
 5. **Opponent pass**: for every opponent club found in Nesodden's schedule, visits `/FiksWeb/Club/View/{clubId}`, finds their G16 teams, scrapes those teams' full match schedules, and scrapes squads for played matches within the last 60 days
-6. Writes everything to `data/synced-data.json`
+6. Writes per-team files to `data/teams/{ageGroup}/{fiksId}.json`, shared squads to `data/squads.json`, opponent data to `data/opponents.json`, and club teams to `data/club.json`
 
 Sync timeout is **10 minutes**. The first run is slow (scrapes all opponent squads); subsequent runs are fast because squads with `ready: true` are skipped (incremental guard). Only Nesodden matches within 7 days get near-future squad scraping; opponent squads are only scraped for past matches.
 
-### synced-data.json Structure
+### Synced Data File Layout
+
+Data is split across multiple files under `data/` (all gitignored):
 
 ```
-{
-  lastSynced: string,
-  matches:         { [nesoddenTeamFiksId]: Match[] },   // Nesodden's 3 teams
-  players:         { [nesoddenTeamFiksId]: Player[] },  // general rosters (fallback)
-  squads:          { [matchReportId]: Squad },           // shared — Nesodden + opponent matches
-  opponentMatches: { [teamFiksId]: Match[] },           // every G16 team for each opponent club
-  opponentTeams:   { [teamFiksId]: OpponentTeam },      // metadata (name, clubId, division)
-  clubTeams:       { [ageGroup: string]: Team[] }        // all Nesodden teams grouped by age (e.g. "G16", "J15")
-}
+data/
+  club.json                       — { clubTeams: Record<ageGroup, Team[]>, lastSynced }
+  squads.json                     — Record<matchReportId, Squad>  (shared across all teams)
+  opponents.json                  — { matches: Record<teamFiksId, Match[]>, teams: Record<teamFiksId, OpponentTeam> }
+  teams/
+    G16/
+      134742.json                 — { matches: Match[], players: Player[], lastSynced }
+      6895.json
+      154500.json
+    G19/
+      326.json
+      ...
 ```
 
-The `squads` map is keyed by FIKS `matchReportId` and shared across both Nesodden and opponent match entries.
+**Per-team files** (`teams/{ageGroup}/{fiksId}.json`): each Nesodden team's matches and player roster. Syncing one age group only touches that group's files.
+
+**Squads** (`squads.json`): shared across all teams — a single `matchReportId` can be referenced from both Nesodden and opponent matches.
+
+**Opponents** (`opponents.json`): opponent team matches and metadata, used by cross-team player sharing.
+
+**Club** (`club.json`): all Nesodden teams grouped by age group, used for navigation.
+
+Legacy `synced-data.json` is auto-migrated on first import of `lib/fiksSync.ts`.
 
 ### FIKS Scraping Details
 
@@ -122,7 +135,7 @@ Shown in `CrossTeamPlayers` when a match card is expanded and squad data is read
 | File | Role |
 |------|------|
 | `lib/types.ts` | `Team`, `Match`, `Squad`, `Player`, `OpponentTeam`, `ClubAppearance`, `MatchEvent` — single source of type truth |
-| `lib/fiksSync.ts` | Read/write `data/synced-data.json`; defines `SyncedData` interface; mtime-based in-memory cache |
+| `lib/fiksSync.ts` | Multi-file data layer: per-team reads/writes, shared squads/opponents/club files; mtime-based per-file cache |
 | `lib/scraper.ts` | Axios+Cheerio live scraper (matches only; players always empty — JS-rendered) |
 | `lib/mockData.ts` | `G16_TEAMS` array (3 teams with FIKS IDs) + mock match/player data |
 | `tests/fiks-sync.spec.ts` | Full Playwright sync; all scraping logic including opponent pass |

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { readSyncedData } from '@/lib/fiksSync';
+import { findAgeGroup, readTeamData } from '@/lib/fiksSync';
 
 export async function GET(
   _req: Request,
@@ -7,9 +7,12 @@ export async function GET(
 ) {
   const { fiksId } = await params;
 
-  const synced = readSyncedData();
-  if (synced?.players[fiksId]?.length) {
-    return NextResponse.json({ players: synced.players[fiksId], source: 'fiks' });
+  const ageGroup = findAgeGroup(fiksId);
+  if (ageGroup) {
+    const data = readTeamData(ageGroup, fiksId);
+    if (data?.players?.length) {
+      return NextResponse.json({ players: data.players, source: 'fiks' });
+    }
   }
 
   return NextResponse.json({ players: [], source: 'none' });
