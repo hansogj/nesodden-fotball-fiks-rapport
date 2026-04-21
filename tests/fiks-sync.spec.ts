@@ -29,7 +29,7 @@ import { test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { G16_TEAMS } from '../lib/mockData';
 import { writeSyncedData, readSyncedData } from '../lib/fiksSync';
-import type { Match, Player, Squad, Team, OpponentTeam } from '../lib/types';
+import type { Match, Player, Squad, Team, OpponentTeam, MatchEvent, GoalType, CardType } from '../lib/types';
 
 const FIKS_BASE = 'https://fiks.fotball.no';
 const NESODDEN_CLUB_ID = '82';
@@ -281,6 +281,190 @@ async function scrapeClubTeamsByAgeGroup(
   });
 }
 
+// ── Match event scraping (Hendelser tab) ─────────────────────────────────────
+
+/**
+ * Extracts goals and cards from the Hendelser (events) tab of a FIKS MatchReport page.
+ *
+ * FIKS renders the tab as a vertical timeline where home events appear on the left column
+ * and away events on the right. Each event row contains:
+ *   - An icon <i class="matchreport-icon-*"> identifying the event type
+ *   - A player name in the same side column
+ *   - A minute in a centre cell
+ *
+ * Typical layout (simplified):
+ *   <div class="match-events">
+ *     <div class="match-event-row">
+ *       <div class="col-event-home"><span class="event-player">Last, First</span><i class="matchreport-icon-goal"/></div>
+ *       <div class="col-event-time">23'</div>
+ *       <div class="col-event-away"></div>
+ *     </div>
+ *   </div>
+ *
+ * We use a single page.evaluate() so we can inspect the live (post-click) DOM.
+ */
+async function extractMatchEvents(page: Page): Promise<MatchEvent[]> {
+  // Brief wait for dynamic content to render after tab switch
+  await page.waitForTimeout(600);
+
+  return page.evaluate(() => {
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    function iconType(iconClass: string): { type: 'goal' | 'card'; goalType?: string; cardType?: string } | null {
+      const c = iconClass.toLowerCase();
+      // Goals
+      if (c.includes('own-goal') || c.includes('owngoal') || c.includes('selvmål') || c.includes('selfgoal'))
+        return { type: 'goal', goalType: 'own' };
+      if (c.includes('penalty') || c.includes('straffe-mål') || c.includes('straffemål'))
+        return { type: 'goal', goalType: 'penalty' };
+      if (c.includes('goal') || c.includes('mål'))
+        return { type: 'goal', goalType: 'normal' };
+      // Cards
+      if (c.includes('second-yellow') || c.includes('yellow-red') || c.includes('andre-gult'))
+        return { type: 'card', cardType: 'yellow-red' };
+      if (c.includes('red-card') || c.includes('redcard') || c.includes('rødt') || c.includes('utvisning'))
+        return { type: 'card', cardType: 'red' };
+      if (c.includes('yellow') || c.includes('warning') || c.includes('gult') || c.includes('advarsel'))
+        return { type: 'card', cardType: 'yellow' };
+      return null;
+    }
+
+    function cleanName(raw: string): string {
+      return raw.replace(/\s*\(.*?\)\s*$/, '').replace(/\s+/g, ' ').trim();
+    }
+
+    function parseMinute(text: string): number | undefined {
+      const m = text.match(/(\d+)/);
+      return m ? parseInt(m[1]) : undefined;
+    }
+
+    // ── Strategy A: FIKS standard event rows ─────────────────────────────────
+    // Selectors ranked by specificity — stops at first match that yields results.
+    const rowSelectors = [
+      '.match-events .event-row',
+      '.match-events .match-event-row',
+      '.events-list .event-row',
+      '.event-list .event-row',
+      '.match-event-list > div',
+      '[class*="events"] [class*="event-row"]',
+      '[class*="event-list"] > div',
+    ];
+
+    let rows: Element[] = [];
+    for (const sel of rowSelectors) {
+      const found = [...document.querySelectorAll(sel)];
+      if (found.length > 0) { rows = found; break; }
+    }
+
+    const result: MatchEvent[] = [];
+
+    if (rows.length > 0) {
+      for (const row of rows) {
+        const icons = row.querySelectorAll('i[class], [class*="icon"]');
+        let event: { type: 'goal' | 'card'; goalType?: string; cardType?: string } | null = null;
+        for (const icon of icons) {
+          event = iconType(icon.className);
+          if (event) break;
+        }
+        if (!event) continue;
+
+        // Minute — look for a cell with digits + optional apostrophe
+        const minuteEl = row.querySelector('[class*="minute"], [class*="time"], [class*="tid"]');
+        const minute = minuteEl
+          ? parseMinute((minuteEl as HTMLElement).innerText)
+          : parseMinute((row as HTMLElement).innerText);
+
+        // Home/away columns
+        const homeCol = row.querySelector('[class*="home"], .col-event-home, .event-home');
+        const awayCol = row.querySelector('[class*="away"], .col-event-away, .event-away');
+
+        function nameFromCol(col: Element | null): string {
+          if (!col) return '';
+          // Find first span/p that is not an icon and has >2 chars
+          const candidates = [...col.querySelectorAll('span, p, a, label')];
+          for (const c of candidates) {
+            if (c.querySelector('i, [class*="icon"]')) continue;
+            const t = cleanName((c as HTMLElement).innerText);
+            if (t.length > 2) return t;
+          }
+          // Fall back to col text itself
+          return cleanName((col as HTMLElement).innerText.split('\n')[0]);
+        }
+
+        const homeName = nameFromCol(homeCol);
+        const awayName = nameFromCol(awayCol);
+
+        if (homeName) {
+          result.push({
+            playerName: homeName,
+            minute,
+            side: 'home',
+            type: event.type,
+            goalType: event.goalType as GoalType | undefined,
+            cardType: event.cardType as CardType | undefined,
+          });
+        }
+        if (awayName) {
+          result.push({
+            playerName: awayName,
+            minute,
+            side: 'away',
+            type: event.type,
+            goalType: event.goalType as GoalType | undefined,
+            cardType: event.cardType as CardType | undefined,
+          });
+        }
+      }
+
+      return result;
+    }
+
+    // ── Strategy B: scan for any icon in event panel, infer side from position ─
+    // Fallback when class names don't match Strategy A patterns.
+    const panel = document.querySelector(
+      '[class*="hendelser"], [class*="events-panel"], .tab-pane.active, .content-area > div:nth-child(2)'
+    );
+    if (!panel) return [];
+
+    const allIcons = panel.querySelectorAll('i[class]');
+    for (const icon of allIcons) {
+      const evt = iconType(icon.className);
+      if (!evt) continue;
+
+      // Walk up to find the row-level container
+      let row: Element | null = icon.parentElement;
+      while (row && row !== panel && !row.className.includes('row') && !row.className.includes('event')) {
+        row = row.parentElement;
+      }
+      if (!row || row === panel) continue;
+
+      const rowText = (row as HTMLElement).innerText;
+      const minute = parseMinute(rowText);
+
+      // Heuristic: find sibling text nodes / spans for player name
+      const parent = icon.parentElement as HTMLElement | null;
+      const textNode = parent?.innerText?.replace(/\d+['`']/g, '').trim().split('\n')[0] ?? '';
+      const playerName = cleanName(textNode);
+      if (!playerName || playerName.length < 3) continue;
+
+      // Side heuristic: if the icon's parent is in the left half of the row, it's home
+      const iconRect = icon.getBoundingClientRect();
+      const rowRect = (row as HTMLElement).getBoundingClientRect();
+      const side: 'home' | 'away' = iconRect.left < rowRect.left + rowRect.width / 2 ? 'home' : 'away';
+
+      result.push({
+        playerName,
+        minute,
+        side,
+        type: evt.type,
+        goalType: evt.goalType as GoalType | undefined,
+        cardType: evt.cardType as CardType | undefined,
+      });
+    }
+
+    return result;
+  });
+}
+
 // ── Squad (kamptropp) scraping ────────────────────────────────────────────────
 
 /** Extract all player rows from the currently visible squad panel in one JS call. */
@@ -360,7 +544,18 @@ async function scrapeSquad(page: Page, matchReportId: string): Promise<SquadWith
   await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
   const away = await extractSquadSide(page);
 
-  return { ready: home.length > 0 || away.length > 0, home, away, ...clubIds };
+  // Scrape events from the Hendelser tab (only for played matches that have squads)
+  let events: MatchEvent[] = [];
+  const hendelsesLink = page.locator('nav.tab-options a.option2, nav.tab-options a:nth-child(2)').first();
+  if (await hendelsesLink.count() > 0) {
+    await hendelsesLink.click();
+    events = await extractMatchEvents(page);
+    if (events.length > 0) {
+      console.log(`    [events] ${events.length} events: ${events.filter(e=>e.type==='goal').length} goals, ${events.filter(e=>e.type==='card').length} cards`);
+    }
+  }
+
+  return { ready: home.length > 0 || away.length > 0, home, away, events, ...clubIds };
 }
 
 // ── Player roster scraping (Fotballtropp — fallback) ─────────────────────────

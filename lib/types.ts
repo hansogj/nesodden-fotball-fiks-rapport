@@ -25,10 +25,24 @@ export interface Match {
   matchReportId?: string; // FIKS internal ID for MatchReport/View page
 }
 
+export type GoalType = 'normal' | 'own' | 'penalty';
+export type CardType = 'yellow' | 'red' | 'yellow-red';
+
+export interface MatchEvent {
+  /** Player name as it appears in the FIKS Hendelser tab */
+  playerName: string;
+  minute?: number;
+  side: 'home' | 'away';
+  type: 'goal' | 'card';
+  goalType?: GoalType;
+  cardType?: CardType;
+}
+
 export interface Squad {
   ready: boolean;
   home: Player[];
   away: Player[];
+  events?: MatchEvent[];
 }
 
 export interface Player {

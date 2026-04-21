@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, memo } from 'react';
-import type { Match, Player, Team } from '@/lib/types';
+import type { Match, Player, Team, MatchEvent } from '@/lib/types';
 import { TeamEmblem } from './TeamEmblem';
 import { PlayerList } from './PlayerList';
 import { CrossTeamPlayers } from './CrossTeamPlayers';
@@ -26,6 +26,7 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTea
   const [opponentPlayers, setOpponentPlayers] = useState<Player[] | null>(null);
   const [squadReady, setSquadReady] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
+  const [matchEvents, setMatchEvents] = useState<MatchEvent[]>([]);
 
   const isHomeNesodden = match.homeClubId === NESODDEN_CLUB_ID;
   const opponentTeamId = isHomeNesodden ? match.awayTeamId : match.homeTeamId;
@@ -43,6 +44,7 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTea
         // Fetch match-specific kamptropp from FIKS sync data
         const squad = await fetch(`/api/squads/${match.matchReportId}`).then((r) => r.json());
         setSquadReady(squad.ready ?? false);
+        setMatchEvents(squad.events ?? []);
         if (squad.ready) {
           const homeIsNesodden = match.homeClubId === NESODDEN_CLUB_ID;
           setNesoddenPlayers(homeIsNesodden ? squad.home : squad.away);
@@ -74,7 +76,7 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTea
   }, [open, nesoddenPlayers, match.matchReportId, nesoddenTeamId, opponentTeamId]);
 
   return (
-    <div className={`rounded-xl border overflow-hidden transition-all ${past ? 'border-dark-border bg-dark-surface opacity-65' : 'border-dark-border bg-dark-card hover:border-nesodden-red/40'}`}>
+    <div className={`rounded-xl border overflow-hidden transition-all ${past ? 'border-dark-border bg-dark-surface' : 'border-dark-border bg-dark-card hover:border-nesodden-red/40'}`}>
       <button onClick={toggle} className="w-full text-left p-4 group">
         {/* Meta row */}
         <div className="flex items-center justify-between mb-3">
@@ -167,10 +169,21 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTea
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-dark-border">
                 <div className="p-4">
-                  <PlayerList players={nesoddenPlayers ?? []} teamName={nesoddenName} isNesodden />
+                  <PlayerList
+                    players={nesoddenPlayers ?? []}
+                    teamName={nesoddenName}
+                    isNesodden
+                    events={matchEvents}
+                    side={isHomeNesodden ? 'home' : 'away'}
+                  />
                 </div>
                 <div className="p-4">
-                  <PlayerList players={opponentPlayers ?? []} teamName={opponentName} />
+                  <PlayerList
+                    players={opponentPlayers ?? []}
+                    teamName={opponentName}
+                    events={matchEvents}
+                    side={isHomeNesodden ? 'away' : 'home'}
+                  />
                 </div>
               </div>
               {((nesoddenPlayers?.length ?? 0) > 0 || (opponentPlayers?.length ?? 0) > 0) && (

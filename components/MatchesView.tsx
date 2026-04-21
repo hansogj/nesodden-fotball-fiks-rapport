@@ -272,7 +272,7 @@ export function MatchesView() {
             )}
 
             {upcoming.map((m) => (
-              <div key={m.matchId} className="opacity-60 hover:opacity-100 transition-opacity">
+              <div key={m.matchId} className="opacity-50 hover:opacity-100 transition-opacity">
                 <MatchCard match={m} nesoddenTeamId={activeId} allTeams={teams} />
               </div>
             ))}
