@@ -170,19 +170,20 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTea
               <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-dark-border">
                 <div className="p-4">
                   <PlayerList
-                    players={nesoddenPlayers ?? []}
-                    teamName={nesoddenName}
-                    isNesodden
+                    players={isHomeNesodden ? (nesoddenPlayers ?? []) : (opponentPlayers ?? [])}
+                    teamName={isHomeNesodden ? nesoddenName : opponentName}
+                    isNesodden={isHomeNesodden}
                     events={matchEvents}
-                    side={isHomeNesodden ? 'home' : 'away'}
+                    side="home"
                   />
                 </div>
                 <div className="p-4">
                   <PlayerList
-                    players={opponentPlayers ?? []}
-                    teamName={opponentName}
+                    players={isHomeNesodden ? (opponentPlayers ?? []) : (nesoddenPlayers ?? [])}
+                    teamName={isHomeNesodden ? opponentName : nesoddenName}
+                    isNesodden={!isHomeNesodden}
                     events={matchEvents}
-                    side={isHomeNesodden ? 'away' : 'home'}
+                    side="away"
                   />
                 </div>
               </div>

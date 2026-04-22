@@ -12,8 +12,8 @@ function sortAgeGroups(ags: string[]): string[] {
 }
 
 /**
- * Enrich scraped teams with any data we already know from hardcoded sources.
- * For G16, we have proper names ("Nesodden G16-1") and divisions from G16_TEAMS.
+ * Enrich scraped teams with division data from hardcoded sources.
+ * Names always come from the live scrape (FIKS is authoritative for names).
  */
 function enrich(teams: Record<string, Team[]>, clubId: string): Record<string, Team[]> {
   if (clubId !== NESODDEN_CLUB_ID || !teams.G16) return teams;
@@ -21,7 +21,7 @@ function enrich(teams: Record<string, Team[]>, clubId: string): Record<string, T
     ...teams,
     G16: teams.G16.map((t) => {
       const known = G16_TEAMS.find((g) => g.fiksId === t.fiksId);
-      return known ?? t;
+      return known ? { ...t, division: known.division || t.division } : t;
     }),
   };
 }

@@ -76,11 +76,32 @@ function extractClubIdFromLogoUrl(url: string): string {
 
 // ── Match scraping ────────────────────────────────────────────────────────────
 
-async function scrapeMatches(page: Page, team: Team): Promise<Match[]> {
+async function scrapeMatches(page: Page, team: Team): Promise<{ matches: Match[]; division: string }> {
   await page.goto(`${FIKS_BASE}/FiksWeb/Team/View/${team.fiksId}?accordionHistory=collapseTwo`);
   await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
 
   console.log(`  [matches] Page: "${await page.title()}"`);
+
+  // Extract division from the team page (same logic as scrapeOpponentTeamMatches)
+  const division = await page.evaluate(() => {
+    const candidates = [
+      '#headingTwo a',
+      '#headingTwo .panel-title',
+      '#headingTwo h3',
+      '#headingTwo h4',
+      '#headingTwo button',
+      '.breadcrumb li:nth-last-child(2) a',
+    ];
+    for (const sel of candidates) {
+      const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
+      if (text.length > 3 && /divisjon|serie|krets/i.test(text)) return text;
+    }
+    for (const sel of candidates) {
+      const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
+      if (text.length > 3) return text;
+    }
+    return '';
+  });
 
   const rows = page.locator('#collapseTwo table tbody tr');
   const count = await rows.count();
@@ -131,7 +152,7 @@ async function scrapeMatches(page: Page, team: Team): Promise<Match[]> {
     });
   }
 
-  return matches;
+  return { matches, division };
 }
 
 // ── Opponent team match scraping ──────────────────────────────────────────────
@@ -615,7 +636,7 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       const known = G16_TEAMS.find((t) => t.fiksId === fiksId);
       return {
         fiksId,
-        name:       known?.name ?? name,
+        name,
         division:   known?.division ?? '',
         clubFiksId: NESODDEN_CLUB_ID,
         logoUrl:    `https://images.fotball.no/clublogos/${NESODDEN_CLUB_ID}.png`,
@@ -623,7 +644,13 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     });
   }
   console.log(`  → found age groups: ${Object.keys(clubTeams).sort().join(', ')}`);
-  writeClubData({ clubTeams, lastSynced: new Date().toISOString() });
+
+  // Update teamsToSync with live names from FIKS (handles team renames)
+  const allDiscoveredTeams = Object.values(clubTeams).flat();
+  teamsToSync = teamsToSync.map((t) => {
+    const live = allDiscoveredTeams.find((d) => d.fiksId === t.fiksId);
+    return live ?? t;
+  });
 
   // Build fiksId → ageGroup lookup
   const ageGroupOf: Record<string, string> = {};
@@ -641,8 +668,15 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     const ag = ageGroupOf[team.fiksId] ?? 'unknown';
     console.log(`\n[sync] ── ${team.name} (${ag}) ──`);
 
-    const teamMatches = await scrapeMatches(page, team);
-    console.log(`  → ${teamMatches.length} matches`);
+    const { matches: teamMatches, division: teamDivision } = await scrapeMatches(page, team);
+    console.log(`  → ${teamMatches.length} matches, division: "${teamDivision}"`);
+
+    // Update clubTeams with the live division from the team page
+    const ag2 = ageGroupOf[team.fiksId];
+    if (ag2 && clubTeams[ag2]) {
+      const entry = clubTeams[ag2].find((t) => t.fiksId === team.fiksId);
+      if (entry && teamDivision) entry.division = teamDivision;
+    }
 
     const now     = Date.now();
     const week_ms = 7 * 24 * 60 * 60 * 1000;
@@ -663,13 +697,16 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
         continue;
       }
 
-      // Incremental: skip squads already scraped and ready (with events)
-      if (squads[match.matchReportId]?.ready) {
+      // Incremental: skip squads already fully scraped (both sides present, with events)
+      const existingSquad = squads[match.matchReportId];
+      const isIncomplete = existingSquad?.ready && isPlayed
+        && (existingSquad.home.length === 0 || existingSquad.away.length === 0);
+      if (existingSquad?.ready && !isIncomplete) {
         // Backfill events for squads scraped before event extraction was added
-        if (!('events' in squads[match.matchReportId]) && isPlayed) {
+        if (!('events' in existingSquad) && isPlayed) {
           process.stdout.write(`  [events backfill] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
           const events = await scrapeEventsOnly(page, match.matchReportId, match.homeTeam);
-          squads[match.matchReportId].events = events;
+          existingSquad.events = events;
           console.log(events.length > 0
             ? `${events.length} events: ${events.filter(e=>e.type==='goal').length} goals, ${events.filter(e=>e.type==='card').length} cards`
             : 'no events');
@@ -677,8 +714,11 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
         squadCount++;
         continue;
       }
-
-      process.stdout.write(`  [squad] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+      if (isIncomplete) {
+        process.stdout.write(`  [squad rescrape] ${match.date} ${match.homeTeam} vs ${match.awayTeam} (missing ${existingSquad.home.length === 0 ? 'home' : 'away'}) … `);
+      } else {
+        process.stdout.write(`  [squad] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+      }
       const squad = await scrapeSquad(page, match.matchReportId, match.homeTeam);
       const { homeClubId, awayClubId, ...squadData } = squad;
       squads[match.matchReportId] = squadData;
@@ -708,6 +748,9 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
 
     allNesoddenMatches[team.fiksId] = teamMatches;
   }
+
+  // Write club data after Nesodden team loop so it includes live divisions
+  writeClubData({ clubTeams, lastSynced: new Date().toISOString() });
 
   // ── 2. Logo pass for Nesodden matches ────────────────────────────────────────
   // Include matches from non-synced teams (already on disk) for a complete club-ID map
@@ -860,13 +903,16 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
         const matchTime = new Date(y, mo - 1, d).getTime();
         if (now60 - matchTime > lookback_ms) continue; // outside lookback window
 
-        // Incremental guard
-        if (squads[match.matchReportId]?.ready) {
+        // Incremental guard: skip squads already fully scraped (both sides present)
+        const existingOppSquad = squads[match.matchReportId];
+        const isOppIncomplete = existingOppSquad?.ready
+          && (existingOppSquad.home.length === 0 || existingOppSquad.away.length === 0);
+        if (existingOppSquad?.ready && !isOppIncomplete) {
           // Backfill events for squads scraped before event extraction was added
-          if (!('events' in squads[match.matchReportId])) {
+          if (!('events' in existingOppSquad)) {
             process.stdout.write(`      [events backfill] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
             const events = await scrapeEventsOnly(page, match.matchReportId, match.homeTeam);
-            squads[match.matchReportId].events = events;
+            existingOppSquad.events = events;
             console.log(events.length > 0
               ? `${events.length} events: ${events.filter(e=>e.type==='goal').length} goals, ${events.filter(e=>e.type==='card').length} cards`
               : 'no events');
@@ -878,7 +924,11 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
           continue;
         }
 
-        process.stdout.write(`      [squad] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+        if (isOppIncomplete) {
+          process.stdout.write(`      [squad rescrape] ${match.date} ${match.homeTeam} vs ${match.awayTeam} (missing ${existingOppSquad.home.length === 0 ? 'home' : 'away'}) … `);
+        } else {
+          process.stdout.write(`      [squad] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+        }
         const squad = await scrapeSquad(page, match.matchReportId, match.homeTeam);
         const { homeClubId: hId, awayClubId: aId, ...squadData } = squad;
         squads[match.matchReportId] = squadData;

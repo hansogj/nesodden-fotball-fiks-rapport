@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import type { Team, Match } from '@/lib/types';
 import { TeamEmblem } from './TeamEmblem';
 import { MatchCard } from './MatchCard';
+import { StatsProvider, StandingsSidebar, ScorersCardsSidebar } from './StatsSection';
 
 const CLUB_ID = '82';
 
@@ -122,7 +123,7 @@ export function MatchesView() {
     <div className="min-h-screen bg-dark-bg">
       {/* Header */}
       <header className="border-b border-dark-border bg-dark-surface/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-4 py-4 flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
           <button onClick={() => router.push('/', { scroll: false })} className="shrink-0">
             <TeamEmblem logoUrl="https://images.fotball.no/clublogos/82.png" teamName="Nesodden IF" size="lg" />
           </button>
@@ -183,7 +184,7 @@ export function MatchesView() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-8 space-y-8">
+      <main className="max-w-[1400px] mx-auto px-4 py-8 space-y-8">
         {/* Team selector */}
         {loadingTeams ? (
           <div className="flex gap-2">
@@ -224,64 +225,85 @@ export function MatchesView() {
           </div>
         )}
 
-        {/* Match list */}
-        {loading ? (
-          <div className="space-y-3">
-            {[...Array(4)].map((_, i) => (
-              <div key={i} className="rounded-xl border border-dark-border bg-dark-card p-4 animate-pulse">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="h-3 w-32 bg-dark-border rounded" />
-                  <div className="h-3 w-12 bg-dark-border rounded" />
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-3 flex-1">
-                    <div className="w-16 h-16 rounded-full bg-dark-border" />
-                    <div className="h-4 w-28 bg-dark-border rounded" />
-                  </div>
-                  <div className="h-5 w-6 bg-dark-border rounded" />
-                  <div className="flex items-center gap-3 flex-1 justify-end">
-                    <div className="h-4 w-28 bg-dark-border rounded" />
-                    <div className="w-16 h-16 rounded-full bg-dark-border" />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : matches.length === 0 ? (
-          <div className="text-center py-16 text-dark-muted">
-            <svg className="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            <p>Ingen kamper funnet</p>
-          </div>
-        ) : (
-          <div className="space-y-3 animate-slide-up">
-            {past.map((m) => (
-              <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} allTeams={teams} />
-            ))}
-
-            {past.length > 0 && upcoming.length > 0 && (
-              <div className="flex items-center gap-3 py-2">
-                <div className="flex-1 h-px bg-dark-border" />
-                <span className="text-xs font-semibold uppercase tracking-widest text-nesodden-red flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-nesodden-red inline-block animate-pulse" />
-                  Kommende ({upcoming.length})
-                </span>
-                <div className="flex-1 h-px bg-dark-border" />
-              </div>
+        {/* Three-column layout: standings | matches | scorers+cards */}
+        <StatsProvider fiksId={activeId} key={`stats-${activeId}-${refreshKey}`}>
+          <div className="flex gap-4 items-start">
+            {/* Left sidebar: Standings */}
+            {activeId && (
+              <aside className="hidden xl:block w-72 shrink-0 sticky top-20">
+                <StandingsSidebar fiksId={activeId} />
+              </aside>
             )}
 
-            {upcoming.map((m) => (
-              <div key={m.matchId} className="opacity-50 hover:opacity-100 transition-opacity">
-                <MatchCard match={m} nesoddenTeamId={activeId} allTeams={teams} />
-              </div>
-            ))}
+            {/* Center: Match list */}
+            <div className="flex-1 min-w-0">
+              {loading ? (
+                <div className="space-y-3">
+                  {[...Array(4)].map((_, i) => (
+                    <div key={i} className="rounded-xl border border-dark-border bg-dark-card p-4 animate-pulse">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="h-3 w-32 bg-dark-border rounded" />
+                        <div className="h-3 w-12 bg-dark-border rounded" />
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3 flex-1">
+                          <div className="w-16 h-16 rounded-full bg-dark-border" />
+                          <div className="h-4 w-28 bg-dark-border rounded" />
+                        </div>
+                        <div className="h-5 w-6 bg-dark-border rounded" />
+                        <div className="flex items-center gap-3 flex-1 justify-end">
+                          <div className="h-4 w-28 bg-dark-border rounded" />
+                          <div className="w-16 h-16 rounded-full bg-dark-border" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : matches.length === 0 ? (
+                <div className="text-center py-16 text-dark-muted">
+                  <svg className="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <p>Ingen kamper funnet</p>
+                </div>
+              ) : (
+                <div className="space-y-3 animate-slide-up">
+                  {past.map((m) => (
+                    <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} allTeams={teams} />
+                  ))}
 
-            <p className="text-center text-xs text-dark-muted pt-4">
-              {matches.length} kamper totalt · {past.length} spilt · {upcoming.length} gjenstår
-            </p>
+                  {past.length > 0 && upcoming.length > 0 && (
+                    <div className="flex items-center gap-3 py-2">
+                      <div className="flex-1 h-px bg-dark-border" />
+                      <span className="text-xs font-semibold uppercase tracking-widest text-nesodden-red flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-nesodden-red inline-block animate-pulse" />
+                        Kommende ({upcoming.length})
+                      </span>
+                      <div className="flex-1 h-px bg-dark-border" />
+                    </div>
+                  )}
+
+                  {upcoming.map((m) => (
+                    <div key={m.matchId} className="opacity-50 hover:opacity-100 transition-opacity">
+                      <MatchCard match={m} nesoddenTeamId={activeId} allTeams={teams} />
+                    </div>
+                  ))}
+
+                  <p className="text-center text-xs text-dark-muted pt-4">
+                    {matches.length} kamper totalt · {past.length} spilt · {upcoming.length} gjenstår
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Right sidebar: Scorers + Cards */}
+            {activeId && (
+              <aside className="hidden xl:block w-72 shrink-0 sticky top-20">
+                <ScorersCardsSidebar />
+              </aside>
+            )}
           </div>
-        )}
+        </StatsProvider>
       </main>
     </div>
   );

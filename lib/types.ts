@@ -58,6 +58,41 @@ export interface OpponentTeam {
   division: string;
 }
 
+export interface StandingsEntry {
+  position: number;
+  teamName: string;
+  teamFiksId: string;
+  played: number;
+  won: number;
+  drawn: number;
+  lost: number;
+  goalsFor: number;
+  goalsAgainst: number;
+  goalDiff: number;
+  points: number;
+}
+
+export interface PlayerGoalStats {
+  playerName: string;
+  teamName: string;
+  goals: number;
+}
+
+export interface PlayerCardStats {
+  playerName: string;
+  yellow: number;
+  red: number;
+  yellowRed: number;
+}
+
+export interface TeamStatsResponse {
+  standings: StandingsEntry[];
+  seriesTopScorers: PlayerGoalStats[];
+  teamTopScorers: PlayerGoalStats[];
+  teamCards: PlayerCardStats[];
+  tournament: string;
+}
+
 export interface ClubAppearance {
   matchReportId: string;
   date: string;
