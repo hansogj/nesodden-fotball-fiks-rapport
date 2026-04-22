@@ -455,21 +455,21 @@ async function scrapeSquad(page: Page, matchReportId: string, homeTeamName: stri
   });
 
   // Buttons only appear when the match has a registered squad
+  let home: Player[] = [];
+  let away: Player[] = [];
   const homeBtn = page.getByRole('button', { name: /hjemmelag/i }).first();
-  if (await homeBtn.count() === 0) {
-    return { ready: false, home: [], away: [], ...clubIds };
+  if (await homeBtn.count() > 0) {
+    await homeBtn.click();
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+    home = await extractSquadSide(page);
+
+    const awayBtn = page.getByRole('button', { name: /bortelag/i }).first();
+    await awayBtn.click();
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+    away = await extractSquadSide(page);
   }
 
-  await homeBtn.click();
-  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-  const home = await extractSquadSide(page);
-
-  const awayBtn = page.getByRole('button', { name: /bortelag/i }).first();
-  await awayBtn.click();
-  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-  const away = await extractSquadSide(page);
-
-  // Scrape events from the Hendelser tab (only for played matches that have squads)
+  // Scrape events from the Hendelser tab (goals, cards) — works even without squads
   let events: MatchEvent[] = [];
   const hendelsesLink = page.locator('nav.tab-options a.option2, nav.tab-options a:nth-child(2)').first();
   if (await hendelsesLink.count() > 0) {
@@ -481,6 +481,18 @@ async function scrapeSquad(page: Page, matchReportId: string, homeTeamName: stri
   }
 
   return { ready: home.length > 0 || away.length > 0, home, away, events, ...clubIds };
+}
+
+/** Lightweight backfill: visit a match report page and scrape only events (no squad re-extraction). */
+async function scrapeEventsOnly(page: Page, matchReportId: string, homeTeamName: string): Promise<MatchEvent[]> {
+  await page.goto(`${FIKS_BASE}/FiksWeb/MatchReport/View/${matchReportId}`);
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+  const hendelsesLink = page.locator('nav.tab-options a.option2, nav.tab-options a:nth-child(2)').first();
+  if (await hendelsesLink.count() === 0) return [];
+
+  await hendelsesLink.click();
+  return extractMatchEvents(page, homeTeamName);
 }
 
 // ── Player roster scraping (Fotballtropp — fallback) ─────────────────────────
@@ -651,8 +663,17 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
         continue;
       }
 
-      // Incremental: skip squads already scraped and ready
+      // Incremental: skip squads already scraped and ready (with events)
       if (squads[match.matchReportId]?.ready) {
+        // Backfill events for squads scraped before event extraction was added
+        if (!('events' in squads[match.matchReportId]) && isPlayed) {
+          process.stdout.write(`  [events backfill] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+          const events = await scrapeEventsOnly(page, match.matchReportId, match.homeTeam);
+          squads[match.matchReportId].events = events;
+          console.log(events.length > 0
+            ? `${events.length} events: ${events.filter(e=>e.type==='goal').length} goals, ${events.filter(e=>e.type==='card').length} cards`
+            : 'no events');
+        }
         squadCount++;
         continue;
       }
@@ -841,6 +862,15 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
 
         // Incremental guard
         if (squads[match.matchReportId]?.ready) {
+          // Backfill events for squads scraped before event extraction was added
+          if (!('events' in squads[match.matchReportId])) {
+            process.stdout.write(`      [events backfill] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+            const events = await scrapeEventsOnly(page, match.matchReportId, match.homeTeam);
+            squads[match.matchReportId].events = events;
+            console.log(events.length > 0
+              ? `${events.length} events: ${events.filter(e=>e.type==='goal').length} goals, ${events.filter(e=>e.type==='card').length} cards`
+              : 'no events');
+          }
           squadCount++;
           // Still need to fill logo/club IDs for this match
           localClubIdByName[match.homeTeam.toLowerCase()] ||= extractClubIdFromLogoUrl(match.homeLogoUrl);
