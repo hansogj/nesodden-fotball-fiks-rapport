@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { load } from 'cheerio';
-import type { Match, Player, Team } from './types';
+import type { Match, Team } from './types';
 import { NESODDEN_CLUB_ID } from './mockData';
 
 const BASE = 'https://www.fotball.no/fotballdata';
@@ -118,12 +118,6 @@ export async function scrapeTeamMatches(
   });
 
   return matches;
-}
-
-// The fotball.no players page is JavaScript-rendered; scraping is not possible.
-// The API route falls back to mock data automatically.
-export async function scrapeTeamPlayers(_fiksId: string): Promise<Player[]> {
-  return [];
 }
 
 // ── Club team discovery ───────────────────────────────────────────────────────

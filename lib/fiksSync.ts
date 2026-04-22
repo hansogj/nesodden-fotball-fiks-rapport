@@ -22,24 +22,24 @@ const OPPONENTS_FILE = path.join(DATA_DIR, 'opponents.json');
 const TEAMS_DIR = path.join(DATA_DIR, 'teams');
 const LEGACY_FILE = path.join(DATA_DIR, 'synced-data.json');
 
-export function teamFilePath(ageGroup: string, fiksId: string): string {
+function teamFilePath(ageGroup: string, fiksId: string): string {
   return path.join(TEAMS_DIR, ageGroup, `${fiksId}.json`);
 }
 
 // ── Interfaces ───────────────────────────────────────────────────────────────
 
-export interface TeamFileData {
+interface TeamFileData {
   matches: Match[];
   players: Player[];
   lastSynced: string;
 }
 
-export interface ClubFileData {
+interface ClubFileData {
   clubTeams: Record<string, Team[]>;
   lastSynced?: string;
 }
 
-export interface OpponentsFileData {
+interface OpponentsFileData {
   matches: Record<string, Match[]>;
   teams: Record<string, OpponentTeam>;
 }
@@ -239,7 +239,7 @@ let _migrated = false;
  * One-time migration: if legacy synced-data.json exists and club.json does not,
  * split the old file into the new multi-file layout and delete it.
  */
-export function migrateFromLegacy(): void {
+function migrateFromLegacy(): void {
   if (_migrated) return;
   _migrated = true;
 

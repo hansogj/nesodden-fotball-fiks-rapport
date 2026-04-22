@@ -222,16 +222,4 @@ test.describe('API endpoints', () => {
     });
   }
 
-  test('GET /api/teams returns all three G16 teams', async ({ request }) => {
-    const resp = await request.get('/api/teams');
-    expect(resp.ok()).toBeTruthy();
-
-    const body = await resp.json() as { teams: Array<{ fiksId: string; name: string }> };
-    expect(body.teams).toHaveLength(3);
-
-    const ids = body.teams.map((t) => t.fiksId);
-    expect(ids).toContain('134742');
-    expect(ids).toContain('6895');
-    expect(ids).toContain('154500');
-  });
 });

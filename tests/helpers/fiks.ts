@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-export const FIKS_BASE = 'https://fiks.fotball.no';
+const FIKS_BASE = 'https://fiks.fotball.no';
 
 export const TEAMS = [
   { name: 'G16-1', fiksId: '134742' },
@@ -12,7 +12,7 @@ export function fiksTeamUrl(teamId: string) {
   return `${FIKS_BASE}/FiksWeb/Team/View/${teamId}?accordionHistory=collapseTwo`;
 }
 
-export interface FiksMatch {
+interface FiksMatch {
   date: string;       // raw text from FIKS
   homeTeam: string;
   awayTeam: string;
