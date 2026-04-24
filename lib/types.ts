@@ -4,6 +4,7 @@ export interface Team {
   division: string;
   clubFiksId: string;
   logoUrl: string;
+  tournamentFiksId?: string;
 }
 
 export interface Match {

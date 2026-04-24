@@ -1,7 +1,6 @@
 import axios from 'axios';
 import { load } from 'cheerio';
-import type { Match, Team } from './types';
-import { NESODDEN_CLUB_ID } from './mockData';
+import type { StandingsEntry, Team } from './types';
 
 const BASE = 'https://www.fotball.no/fotballdata';
 const FOTBALL_NO = 'https://www.fotball.no';
@@ -17,113 +16,9 @@ const httpClient = axios.create({
   },
 });
 
-// fotball.no match table columns (from inspecting live page):
-// [date] [weekday] [time] [home] [score/vs] [away] [venue?]
-const DATE_RE    = /^\d{2}\.\d{2}\.\d{4}$/;
-const TIME_RE    = /^\d{2}:\d{2}$/;
-const WEEKDAYS   = ['mandag','tirsdag','onsdag','torsdag','fredag','lørdag','søndag'];
-
-function logoUrl(clubFiksId: string | undefined): string {
-  return clubFiksId
-    ? `https://images.fotball.no/clublogos/${clubFiksId}.png`
-    : '';
-}
-
-function fiksIdFromHref(href: string | undefined): string | undefined {
-  return href?.match(/fiksId=(\d+)/i)?.[1];
-}
-
-export async function scrapeTeamMatches(
-  team: Team,
-  nesoddenClubId = NESODDEN_CLUB_ID
-): Promise<Match[]> {
-  let html: string;
-  try {
-    // `/lag/kamper/` redirects to the same page as `/lag/hjem/` — either works
-    const res = await httpClient.get(`${BASE}/lag/hjem/?fiksId=${team.fiksId}`);
-    html = res.data as string;
-  } catch {
-    return [];
-  }
-
-  const $ = load(html);
-  const matches: Match[] = [];
-
-  // Find every table row that contains a valid date cell
-  $('table tr').each((rowIdx, row) => {
-    const cells = $(row).find('td');
-    if (cells.length < 5) return;
-
-    const cellTexts = cells.toArray().map((c) => $(c).text().trim());
-    const cellHrefs = cells.toArray().map((c) => $(c).find('a').first().attr('href'));
-
-    // Detect column layout: find the date column index
-    let dateIdx = -1;
-    for (let i = 0; i < cellTexts.length; i++) {
-      if (DATE_RE.test(cellTexts[i])) { dateIdx = i; break; }
-    }
-    if (dateIdx === -1) return;
-
-    // Skip weekday column (may or may not be present after date)
-    let cursor = dateIdx + 1;
-    if (WEEKDAYS.includes(cellTexts[cursor]?.toLowerCase())) cursor++;
-
-    // Time
-    const time = TIME_RE.test(cellTexts[cursor]) ? cellTexts[cursor++] : '';
-
-    // Home team
-    const homeTeam = cellTexts[cursor];
-    const homeTeamId = fiksIdFromHref(cellHrefs[cursor]);
-    cursor++;
-
-    // Score / vs separator — skip
-    cursor++;
-
-    // Away team
-    const awayTeam = cellTexts[cursor];
-    const awayTeamId = fiksIdFromHref(cellHrefs[cursor]);
-    cursor++;
-
-    // Venue (optional next cell)
-    const venue = cursor < cellTexts.length ? cellTexts[cursor] : '';
-
-    if (!homeTeam || !awayTeam) return;
-
-    // Determine result if present (score cell usually "2-1" format)
-    const scoreCell = cellTexts[dateIdx + (WEEKDAYS.includes(cellTexts[dateIdx + 1]?.toLowerCase()) ? 3 : 2)];
-    const result = /^\d+\s*[-–]\s*\d+$/.test(scoreCell) ? scoreCell : undefined;
-
-    // Which side is Nesodden?
-    const homeClubId = homeTeamId === team.fiksId ? nesoddenClubId : homeTeamId ?? '';
-    const awayClubId = awayTeamId === team.fiksId ? nesoddenClubId : awayTeamId ?? '';
-    const isHome = homeTeamId === team.fiksId || homeTeam.toLowerCase().includes('nesodden');
-
-    matches.push({
-      matchId: `${team.fiksId}-r${rowIdx}`,
-      date: cellTexts[dateIdx],
-      time,
-      homeTeam,
-      homeTeamId: homeTeamId ?? '',
-      homeClubId,
-      homeLogoUrl: logoUrl(homeClubId),
-      awayTeam,
-      awayTeamId: awayTeamId ?? '',
-      awayClubId,
-      awayLogoUrl: logoUrl(awayClubId),
-      venue,
-      tournament: $('h1').first().text().trim(),
-      isHome,
-      result,
-    });
-  });
-
-  return matches;
-}
-
 // ── Club team discovery ───────────────────────────────────────────────────────
 
 function extractAgeGroup(label: string): string | null {
-  // Match e.g. "G16", "J17", "G08" from labels like "G16 2. div." / "G08 år avd. 27"
   const m = label.match(/\b([GJ])(\d{2})\b/i);
   if (!m) return null;
   return `${m[1].toUpperCase()}${m[2]}`;
@@ -131,25 +26,13 @@ function extractAgeGroup(label: string): string | null {
 
 /**
  * Scrape all teams for a club from fotball.no, grouped by age group.
- *
- * Steps:
- *  1. Fetch the turneringer page for the club (server-rendered HTML)
- *  2. Extract tournament links per unique (ageGroup, tournamentFiksId) — skip cups
- *  3. Fetch each tournament page in parallel batches
- *  4. Find the club's team link in each tournament, extract team fiksId
- *
- * Returns e.g. { G16: [Team, Team, Team], G15: [Team], J17: [Team] }
- *
- * @param clubId       FIKS club ID (e.g. '82' for Nesodden IF)
- * @param clubName     Display name used on fotball.no (e.g. 'Nesodden')
- * @param districtId   fotball.no district filter (e.g. '4' for Oslo-krets)
+ * Uses Cheerio (no browser needed) — suitable for sync and one-time bootstrap.
  */
 export async function scrapeClubTeams(
   clubId: string,
   clubName = 'Nesodden',
   districtId = '4',
 ): Promise<Record<string, Team[]>> {
-  // 1. Fetch the turneringer overview page
   let overviewHtml: string;
   try {
     const res = await httpClient.get(
@@ -163,7 +46,6 @@ export async function scrapeClubTeams(
 
   const $ = load(overviewHtml);
 
-  // 2. Collect tournament entries: skip cups, collect unique (ageGroup+fiksId) pairs
   type TEntry = { fiksId: string; ageGroup: string; division: string; isCup: boolean };
   const tournaments: TEntry[] = [];
 
@@ -177,13 +59,11 @@ export async function scrapeClubTeams(
     tournaments.push({ fiksId, ageGroup, division: label, isCup });
   });
 
-  // Remove cup tournaments for age groups that also have league tournaments
   const hasLeague = new Set(tournaments.filter((t) => !t.isCup).map((t) => t.ageGroup));
   const filtered = tournaments.filter((t) => !t.isCup || !hasLeague.has(t.ageGroup));
 
   if (filtered.length === 0) return {};
 
-  // 3+4. Fetch tournament pages in parallel batches, find the club's team
   const result: Record<string, Team[]> = {};
   const BATCH = 6;
 
@@ -207,15 +87,15 @@ export async function scrapeClubTeams(
             if (!result[ageGroup]) result[ageGroup] = [];
             if (result[ageGroup].some((t) => t.fiksId === teamFiksId)) return;
 
-            // Normalise: "Nesodden 2" / "Nesodden 3" → "Nesodden"
             const baseName = text.replace(/\s+\d+$/, '').trim();
 
             result[ageGroup].push({
               fiksId:    teamFiksId,
-              name:      baseName,             // numbered below
+              name:      baseName,
               division:  division.trim(),
               clubFiksId: clubId,
               logoUrl:   `https://images.fotball.no/clublogos/${clubId}.png`,
+              tournamentFiksId: fiksId,
             });
           });
         } catch {
@@ -236,4 +116,70 @@ export async function scrapeClubTeams(
   }
 
   return result;
+}
+
+// ── Tournament standings scraping ────────────────────────────────────────────
+
+/**
+ * Scrape the full standings table from a fotball.no tournament page.
+ * Columns: #, Lag, S (played), V (won), U (drawn), T (lost), MF "7-4 (3)", P (points)
+ */
+export async function scrapeTournamentStandings(tournamentFiksId: string): Promise<{ standings: StandingsEntry[]; tournament: string }> {
+  try {
+    const res = await httpClient.get(`${BASE}/turnering/tabell/?fiksId=${tournamentFiksId}`, { timeout: 6000 });
+    const $ = load(res.data as string);
+
+    const tournament = $('h1').first().text().trim();
+    const standings: StandingsEntry[] = [];
+
+    // Find the standings table by looking for the header row with "Lag", "S", "V", "U", "T", "MF", "P"
+    let standingsTable: ReturnType<typeof $> | null = null;
+    $('table').each((_, table) => {
+      const headers = $(table).find('thead th').toArray().map((th) => $(th).text().trim());
+      if (headers.includes('Lag') && headers.includes('MF') && headers.includes('P')) {
+        standingsTable = $(table);
+        return false; // break
+      }
+    });
+
+    if (!standingsTable) return { standings, tournament };
+
+    (standingsTable as ReturnType<typeof $>).find('tbody tr').each((_, row) => {
+      const cells = $(row).find('td');
+      if (cells.length < 8) return;
+
+      const cellTexts = cells.toArray().map((c) => $(c).text().trim());
+
+      const teamLink = $(row).find('a[href*="fiksId="]').first();
+      const teamFiksId = teamLink.attr('href')?.match(/fiksId=(\d+)/)?.[1] ?? '';
+      const teamName = teamLink.text().trim() || cellTexts[1] || '';
+      if (!teamName) return;
+
+      const position = parseInt(cellTexts[0]) || standings.length + 1;
+      const played = parseInt(cellTexts[2]) || 0;
+      const won = parseInt(cellTexts[3]) || 0;
+      const drawn = parseInt(cellTexts[4]) || 0;
+      const lost = parseInt(cellTexts[5]) || 0;
+
+      // MF column: "7-4 (3)" format — goals for-against (difference)
+      let goalsFor = 0, goalsAgainst = 0;
+      const mfMatch = cellTexts[6]?.match(/(\d+)\s*[-–]\s*(\d+)/);
+      if (mfMatch) {
+        goalsFor = parseInt(mfMatch[1]);
+        goalsAgainst = parseInt(mfMatch[2]);
+      }
+
+      const points = parseInt(cellTexts[7]) || 0;
+
+      standings.push({
+        position, teamName, teamFiksId,
+        played, won, drawn, lost,
+        goalsFor, goalsAgainst, goalDiff: goalsFor - goalsAgainst, points,
+      });
+    });
+
+    return { standings, tournament };
+  } catch {
+    return { standings: [], tournament: '' };
+  }
 }

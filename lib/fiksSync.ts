@@ -20,6 +20,7 @@ const CLUB_FILE = path.join(DATA_DIR, 'club.json');
 const SQUADS_FILE = path.join(DATA_DIR, 'squads.json');
 const OPPONENTS_FILE = path.join(DATA_DIR, 'opponents.json');
 const TEAMS_DIR = path.join(DATA_DIR, 'teams');
+const STANDINGS_FILE = path.join(DATA_DIR, 'standings.json');
 const LEGACY_FILE = path.join(DATA_DIR, 'synced-data.json');
 
 function teamFilePath(ageGroup: string, fiksId: string): string {
@@ -111,6 +112,25 @@ export function readOpponents(): OpponentsFileData | null {
 
 export function writeOpponents(data: OpponentsFileData): void {
   writeJson(OPPONENTS_FILE, data);
+}
+
+// ── Standings ───────────────────────────────────────────────────────────────
+
+interface StandingsFileData {
+  /** Keyed by tournamentFiksId */
+  [tournamentFiksId: string]: {
+    standings: import('./types').StandingsEntry[];
+    tournament: string;
+    lastUpdated: string;
+  };
+}
+
+export function readStandings(): StandingsFileData {
+  return readJsonCached<StandingsFileData>(STANDINGS_FILE) ?? {};
+}
+
+export function writeStandings(data: StandingsFileData): void {
+  writeJson(STANDINGS_FILE, data);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -2,28 +2,22 @@ import { NextResponse } from 'next/server';
 import { readClubData, writeClubData } from '@/lib/fiksSync';
 import { G16_TEAMS, NESODDEN_CLUB_ID } from '@/lib/mockData';
 import { scrapeClubTeams } from '@/lib/scraper';
-import type { Team } from '@/lib/types';
+
+const MIN_AGE = 12;
 
 function sortAgeGroups(ags: string[]): string[] {
-  return [...ags].sort((a, b) => {
-    if (a[0] !== b[0]) return a[0].localeCompare(b[0]); // G before J
-    return parseInt(a.slice(1)) - parseInt(b.slice(1));  // numeric within gender
-  });
+  return [...ags]
+    .filter((ag) => parseInt(ag.slice(1)) >= MIN_AGE)
+    .sort((a, b) => {
+      if (a[0] !== b[0]) return a[0].localeCompare(b[0]); // G before J
+      return parseInt(a.slice(1)) - parseInt(b.slice(1));  // numeric within gender
+    });
 }
 
-/**
- * Enrich scraped teams with division data from hardcoded sources.
- * Names always come from the live scrape (FIKS is authoritative for names).
- */
-function enrich(teams: Record<string, Team[]>, clubId: string): Record<string, Team[]> {
-  if (clubId !== NESODDEN_CLUB_ID || !teams.G16) return teams;
-  return {
-    ...teams,
-    G16: teams.G16.map((t) => {
-      const known = G16_TEAMS.find((g) => g.fiksId === t.fiksId);
-      return known ? { ...t, division: known.division || t.division } : t;
-    }),
-  };
+function filterTeams(teams: Record<string, import('@/lib/types').Team[]>): Record<string, import('@/lib/types').Team[]> {
+  return Object.fromEntries(
+    Object.entries(teams).filter(([ag]) => parseInt(ag.slice(1)) >= MIN_AGE)
+  );
 }
 
 /**
@@ -33,7 +27,7 @@ function enrich(teams: Record<string, Team[]>, clubId: string): Record<string, T
  *
  * Priority:
  *  1. club.json  clubTeams  (populated by npm run sync)
- *  2. Live scrape from fotball.no  (written back to club.json as cache)
+ *  2. One-time Cheerio scrape from fotball.no (cached to club.json)
  *  3. Hardcoded G16 fallback for Nesodden
  *
  * Response: { ageGroups: string[], teams: Record<string, Team[]>, source: string }
@@ -47,24 +41,20 @@ export async function GET(
 
   // 1. Synced data (from npm run sync) — richest data, use directly
   if (club?.clubTeams && Object.keys(club.clubTeams).length > 0) {
-    const ageGroups = sortAgeGroups(Object.keys(club.clubTeams));
-    return NextResponse.json({ ageGroups, teams: club.clubTeams, source: 'synced' });
+    const teams = filterTeams(club.clubTeams);
+    const ageGroups = sortAgeGroups(Object.keys(teams));
+    return NextResponse.json({ ageGroups, teams, source: 'synced' });
   }
 
-  // 2. Live scrape from fotball.no
+  // 2. One-time bootstrap: discover teams from fotball.no, cache to club.json
   const scraped = await scrapeClubTeams(clubId);
   if (Object.keys(scraped).length > 0) {
-    const enriched = enrich(scraped, clubId);
-
-    // Cache to club.json so the next load is instant
     try {
-      writeClubData({ clubTeams: enriched, lastSynced: new Date().toISOString() });
-    } catch {
-      // non-fatal — just don't cache
-    }
-
-    const ageGroups = sortAgeGroups(Object.keys(enriched));
-    return NextResponse.json({ ageGroups, teams: enriched, source: 'scraped' });
+      writeClubData({ clubTeams: scraped, lastSynced: new Date().toISOString() });
+    } catch { /* non-fatal */ }
+    const teams = filterTeams(scraped);
+    const ageGroups = sortAgeGroups(Object.keys(teams));
+    return NextResponse.json({ ageGroups, teams, source: 'scraped' });
   }
 
   // 3. Hardcoded G16 fallback for Nesodden

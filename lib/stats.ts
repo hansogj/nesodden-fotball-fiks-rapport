@@ -1,4 +1,4 @@
-import { findAgeGroup, readTeamData, readSquads, readOpponents } from './fiksSync';
+import { findAgeGroup, readTeamData, readSquads, readClubData, readStandings } from './fiksSync';
 import type {
   Match,
   Squad,
@@ -7,12 +7,6 @@ import type {
   PlayerCardStats,
   TeamStatsResponse,
 } from './types';
-
-function parseResult(result: string): [number, number] | null {
-  const m = result.match(/(\d+)\s*-\s*(\d+)/);
-  if (!m) return null;
-  return [parseInt(m[1]), parseInt(m[2])];
-}
 
 function primaryTournament(matches: Match[]): string {
   const counts = new Map<string, number>();
@@ -30,70 +24,8 @@ function primaryTournament(matches: Match[]): string {
 function findTeamSide(m: Match, fiksId: string): 'home' | 'away' | null {
   if (m.homeTeamId === fiksId) return 'home';
   if (m.awayTeamId === fiksId) return 'away';
-  // Fallback: use isHome (reliable for Nesodden's own matches)
   if (m.isHome) return 'home';
   return 'away';
-}
-
-function teamKey(fiksId: string, name: string): string {
-  return fiksId || `name:${name}`;
-}
-
-function computeStandings(matches: Match[]): StandingsEntry[] {
-  const teams = new Map<string, StandingsEntry>();
-
-  function getOrCreate(fiksId: string, name: string): StandingsEntry {
-    const key = teamKey(fiksId, name);
-    let entry = teams.get(key);
-    if (!entry) {
-      entry = {
-        position: 0, teamName: name, teamFiksId: fiksId,
-        played: 0, won: 0, drawn: 0, lost: 0,
-        goalsFor: 0, goalsAgainst: 0, goalDiff: 0, points: 0,
-      };
-      teams.set(key, entry);
-    }
-    return entry;
-  }
-
-  const seen = new Set<string>();
-
-  for (const m of matches) {
-    if (!m.result || seen.has(m.matchId)) continue;
-    seen.add(m.matchId);
-
-    const parsed = parseResult(m.result);
-    if (!parsed) continue;
-    const [homeGoals, awayGoals] = parsed;
-
-    const home = getOrCreate(m.homeTeamId, m.homeTeam);
-    const away = getOrCreate(m.awayTeamId, m.awayTeam);
-
-    home.played++;
-    away.played++;
-    home.goalsFor += homeGoals;
-    home.goalsAgainst += awayGoals;
-    away.goalsFor += awayGoals;
-    away.goalsAgainst += homeGoals;
-
-    if (homeGoals > awayGoals) {
-      home.won++; home.points += 3;
-      away.lost++;
-    } else if (homeGoals < awayGoals) {
-      away.won++; away.points += 3;
-      home.lost++;
-    } else {
-      home.drawn++; home.points += 1;
-      away.drawn++; away.points += 1;
-    }
-  }
-
-  const sorted = [...teams.values()]
-    .map((e) => ({ ...e, goalDiff: e.goalsFor - e.goalsAgainst }))
-    .sort((a, b) => b.points - a.points || b.goalDiff - a.goalDiff || b.goalsFor - a.goalsFor);
-
-  sorted.forEach((e, i) => { e.position = i + 1; });
-  return sorted;
 }
 
 function computeTopScorers(
@@ -115,7 +47,6 @@ function computeTopScorers(
     for (const evt of squad.events) {
       if (evt.type !== 'goal' || evt.goalType === 'own') continue;
 
-      // Filter to specific team if requested
       if (forTeamFiksId) {
         const teamSide = findTeamSide(m, forTeamFiksId);
         if (!teamSide || evt.side !== teamSide) continue;
@@ -178,6 +109,20 @@ function computeCards(
     });
 }
 
+/**
+ * Look up the tournament fiksId for a team from club.json (populated by sync).
+ */
+function resolveTournamentFiksId(fiksId: string): string | null {
+  const club = readClubData();
+  if (club?.clubTeams) {
+    for (const teams of Object.values(club.clubTeams)) {
+      const team = teams.find((t) => t.fiksId === fiksId);
+      if (team?.tournamentFiksId) return team.tournamentFiksId;
+    }
+  }
+  return null;
+}
+
 export function computeTeamStats(fiksId: string): TeamStatsResponse | null {
   const ageGroup = findAgeGroup(fiksId);
   if (!ageGroup) return null;
@@ -187,34 +132,31 @@ export function computeTeamStats(fiksId: string): TeamStatsResponse | null {
 
   const tournament = primaryTournament(teamData.matches);
 
-  // If tournament field is populated, filter by it; otherwise use all matches
+  // Filter to primary tournament for scorer/card stats
   const teamMatches = tournament
     ? teamData.matches.filter((m) => m.tournament === tournament)
     : teamData.matches;
 
-  // Gather all matches in the same tournament (including opponent-vs-opponent)
-  const allMatchesMap = new Map<string, Match>();
-  for (const m of teamMatches) allMatchesMap.set(m.matchId, m);
+  const squads = readSquads();
 
-  const opponents = readOpponents();
-  if (opponents?.matches) {
-    for (const oppMatches of Object.values(opponents.matches)) {
-      for (const m of oppMatches) {
-        if (!allMatchesMap.has(m.matchId) && (!tournament || m.tournament === tournament)) {
-          allMatchesMap.set(m.matchId, m);
-        }
-      }
+  // Read cached standings (populated by sync)
+  let standings: StandingsEntry[] = [];
+  let tournamentName = tournament || teamData.matches[0]?.tournament || '';
+
+  const tournamentFiksId = resolveTournamentFiksId(fiksId);
+  if (tournamentFiksId) {
+    const cached = readStandings()[tournamentFiksId];
+    if (cached?.standings?.length) {
+      standings = cached.standings;
+      if (cached.tournament) tournamentName = cached.tournament;
     }
   }
 
-  const allTournamentMatches = [...allMatchesMap.values()];
-  const squads = readSquads();
-
   return {
-    standings: computeStandings(allTournamentMatches),
-    seriesTopScorers: computeTopScorers(allTournamentMatches, squads, null, 10),
+    standings,
+    seriesTopScorers: computeTopScorers(teamMatches, squads, null, 10),
     teamTopScorers: computeTopScorers(teamMatches, squads, fiksId, 10),
     teamCards: computeCards(teamMatches, squads, fiksId),
-    tournament: tournament || teamData.matches[0]?.tournament || '',
+    tournament: tournamentName,
   };
 }

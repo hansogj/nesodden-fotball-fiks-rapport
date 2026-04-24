@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nesodden G16 Kampoversikt — a Next.js 15 app that displays match schedules and squad lists ("kamptropp") for Nesodden IF's three G16 football teams. Data is scraped from fiks.fotball.no via Playwright automation and cached locally.
+Nesodden G16 Kampoversikt — a Next.js 15 app that displays match schedules, squad lists ("kamptropp"), and team statistics (standings, top scorers, cards) for Nesodden IF's G16 football teams. Data is scraped from fiks.fotball.no via Playwright automation and cached locally.
 
 ## Commands
 
@@ -19,6 +19,7 @@ npm run test:accuracy # FIKS auth + data accuracy comparison
 npm run test:kamptropp # Verify squad endpoint returns real FIKS data (not mock)
 npm run test:all      # All Playwright projects
 npm run test:ui       # Playwright visual debugger
+npm run knip          # Detect dead code / unused exports
 
 # Run a single test file:
 npx playwright test tests/kamptropp.spec.ts
@@ -54,6 +55,16 @@ Three tiers, applied in order per API request:
 3. **Mock data** — `lib/mockData.ts` hardcoded fallback
 
 The API always returns a `source` field (`'synced'` | `'scraped'` | `'mock'`) so the client can detect which tier responded.
+
+### Team Statistics
+
+`GET /api/teams/{fiksId}/stats` returns tournament standings, top scorers (series-wide and team-specific), and card stats. The flow:
+
+1. `lib/stats.ts` → `computeTeamStats(fiksId)` identifies the team's primary tournament (most frequent in match list), resolves its `tournamentFiksId` from `club.json` or by scraping fotball.no
+2. `lib/scraper.ts` → `scrapeTournamentStandings(tournamentFiksId)` fetches the standings table from fotball.no
+3. Goal/card stats are computed from squad match events (`MatchEvent[]`) in synced data
+
+`components/StatsSection.tsx` provides `StatsProvider` (context + data fetching), `StandingsSidebar`, and `ScorersCardsSidebar` — rendered alongside the match list in `MatchesView`.
 
 ### How Sync Works
 
@@ -136,7 +147,8 @@ Shown in `CrossTeamPlayers` when a match card is expanded and squad data is read
 |------|------|
 | `lib/types.ts` | `Team`, `Match`, `Squad`, `Player`, `OpponentTeam`, `ClubAppearance`, `MatchEvent` — single source of type truth |
 | `lib/fiksSync.ts` | Multi-file data layer: per-team reads/writes, shared squads/opponents/club files; mtime-based per-file cache |
-| `lib/scraper.ts` | Axios+Cheerio live scraper (matches only; players always empty — JS-rendered) |
+| `lib/scraper.ts` | Axios+Cheerio live scraper: matches, tournament standings, tournament FIKS ID lookup |
+| `lib/stats.ts` | `computeTeamStats`: standings, top scorers, cards — aggregated from synced data + scraped standings |
 | `lib/mockData.ts` | `G16_TEAMS` array (3 teams with FIKS IDs) + mock match/player data |
 | `tests/fiks-sync.spec.ts` | Full Playwright sync; all scraping logic including opponent pass |
 | `tests/helpers/fiks.ts` | Shared Playwright helpers: `extractFiksMatches`, `normaliseTeamName`, `fiksTeamUrl` |
@@ -145,12 +157,15 @@ Shown in `CrossTeamPlayers` when a match card is expanded and squad data is read
 | `app/api/clubs/[clubId]/squads/route.ts` | Cross-team appearance lookup; searches Nesodden + opponent matches |
 | `app/api/clubs/[clubId]/teams/route.ts` | Teams for a club grouped by age group (synced → live scrape → G16 fallback) |
 | `app/api/teams/[fiksId]/matches/route.ts` | Match list for a Nesodden team (synced → scraped → mock) |
+| `app/api/teams/[fiksId]/stats/route.ts` | Tournament standings, top scorers, and card stats for a team |
+| `app/api/teams/[fiksId]/players/route.ts` | Synced player roster for a team |
 | `components/HomeRouter.tsx` | Client router: shows `ClubOverview` or `MatchesView` based on `?ageGroup` |
 | `components/ClubOverview.tsx` | Landing page: age-group cards for all Nesodden teams, sync button |
 | `components/MatchesView.tsx` | Per-age-group view: team tabs, sorted match list |
 | `components/MatchCard.tsx` | Individual match: result display, lazy-loads kamptropp on expand |
 | `components/CrossTeamPlayers.tsx` | Player sharing detection across Nesodden teams and opponent sibling teams |
 | `components/PlayerList.tsx` | Grouped squad list with position badges and match event icons (goals, cards) |
+| `components/StatsSection.tsx` | Stats context provider + `StandingsSidebar` and `ScorersCardsSidebar` components |
 | `components/TeamEmblem.tsx` | Club logo image with 2-letter initials fallback |
 
 ### Playwright Projects

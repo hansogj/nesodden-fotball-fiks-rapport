@@ -84,6 +84,28 @@ export default defineConfig({
         baseURL: 'http://localhost:3210',
       },
     },
+
+    // Match completeness: verifies app match lists match FIKS for all synced teams
+    {
+      name: 'match-completeness',
+      testMatch: '**/match-completeness.spec.ts',
+      dependencies: ['fiks-setup'],
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://localhost:3210',
+        storageState: '.auth/fiks.json',
+      },
+    },
+
+    // Age group coverage: verifies every active age group (≥12) has a card on the home page
+    {
+      name: 'age-groups',
+      testMatch: '**/age-groups.spec.ts',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://localhost:3210',
+      },
+    },
   ],
 
   webServer: {

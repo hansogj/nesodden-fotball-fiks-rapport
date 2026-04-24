@@ -33,7 +33,9 @@ import {
   readSquads, writeSquads,
   readClubData, writeClubData,
   readOpponents, writeOpponents,
+  readStandings, writeStandings,
 } from '../lib/fiksSync';
+import { scrapeTournamentStandings, scrapeClubTeams } from '../lib/scraper';
 import type { Match, Player, Squad, Team, OpponentTeam, MatchEvent, GoalType, CardType } from '../lib/types';
 
 const FIKS_BASE = 'https://fiks.fotball.no';
@@ -82,44 +84,47 @@ async function scrapeMatches(page: Page, team: Team): Promise<{ matches: Match[]
 
   console.log(`  [matches] Page: "${await page.title()}"`);
 
-  // Extract division from the team page (same logic as scrapeOpponentTeamMatches)
-  const division = await page.evaluate(() => {
-    const candidates = [
-      '#headingTwo a',
-      '#headingTwo .panel-title',
-      '#headingTwo h3',
-      '#headingTwo h4',
-      '#headingTwo button',
+  // Single page.evaluate() to extract division + all match rows at once
+  // (per-element locator calls in loops cause multi-minute hangs on FIKS)
+  const { division, rows } = await page.evaluate(() => {
+    // Division
+    const divCandidates = [
+      '#headingTwo a', '#headingTwo .panel-title',
+      '#headingTwo h3', '#headingTwo h4', '#headingTwo button',
       '.breadcrumb li:nth-last-child(2) a',
     ];
-    for (const sel of candidates) {
+    let division = '';
+    for (const sel of divCandidates) {
       const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
-      if (text.length > 3 && /divisjon|serie|krets/i.test(text)) return text;
+      if (text.length > 3 && /divisjon|serie|krets/i.test(text)) { division = text; break; }
     }
-    for (const sel of candidates) {
-      const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
-      if (text.length > 3) return text;
+    if (!division) {
+      for (const sel of divCandidates) {
+        const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
+        if (text.length > 3) { division = text; break; }
+      }
     }
-    return '';
+
+    // Match rows
+    const rows: Array<{ cells: string[]; href: string }> = [];
+    document.querySelectorAll('#collapseTwo table tbody tr').forEach((tr) => {
+      const tds = tr.querySelectorAll('td');
+      if (tds.length !== 8) return;
+      const cells = Array.from(tds, (td) => (td.innerText ?? td.textContent ?? '').trim().replace(/\s+/g, ' '));
+      const link = tds[0]?.querySelector('a');
+      const href = link?.getAttribute('href') ?? '';
+      rows.push({ cells, href });
+    });
+
+    return { division, rows };
   });
 
-  const rows = page.locator('#collapseTwo table tbody tr');
-  const count = await rows.count();
-  console.log(`  [matches] Total rows: ${count}`);
+  console.log(`  [matches] Total rows: ${rows.length}`);
 
   const matches: Match[] = [];
 
-  for (let i = 0; i < count; i++) {
-    const row = rows.nth(i);
-    const cells = row.locator('td');
-    if (await cells.count() !== 8) continue;
-
-    const c = await Promise.all(Array.from({ length: 8 }, (_, j) => cells.nth(j).innerText()));
-    const cleaned = c.map((t) => t.trim().replace(/\s+/g, ' '));
-
-    // Extract internal match report ID from the link in cell[0]
-    const href = await cells.nth(0).locator('a').getAttribute('href').catch(() => null);
-    const matchReportId = href?.match(/MatchReport\/View\/(\d+)/)?.[1] ?? '';
+  for (const { cells: cleaned, href } of rows) {
+    const matchReportId = href.match(/MatchReport\/View\/(\d+)/)?.[1] ?? '';
 
     const matchId  = cleaned[0];
     const homeTeam = cleaned[2];
@@ -168,43 +173,42 @@ async function scrapeOpponentTeamMatches(
   await page.goto(`${FIKS_BASE}/FiksWeb/Team/View/${teamFiksId}?accordionHistory=collapseTwo`);
   await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
 
-  // Try to extract division/series name from the accordion heading or page title
-  const division = await page.evaluate(() => {
-    const candidates = [
-      '#headingTwo a',
-      '#headingTwo .panel-title',
-      '#headingTwo h3',
-      '#headingTwo h4',
-      '#headingTwo button',
+  // Single page.evaluate() — same pattern as scrapeMatches
+  const { division, rows } = await page.evaluate(() => {
+    const divCandidates = [
+      '#headingTwo a', '#headingTwo .panel-title',
+      '#headingTwo h3', '#headingTwo h4', '#headingTwo button',
       '.breadcrumb li:nth-last-child(2) a',
     ];
-    for (const sel of candidates) {
+    let division = '';
+    for (const sel of divCandidates) {
       const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
-      if (text.length > 3 && /divisjon|serie|krets/i.test(text)) return text;
+      if (text.length > 3 && /divisjon|serie|krets/i.test(text)) { division = text; break; }
     }
-    // Fall back to anything in headingTwo
-    for (const sel of candidates) {
-      const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
-      if (text.length > 3) return text;
+    if (!division) {
+      for (const sel of divCandidates) {
+        const text = (document.querySelector(sel) as HTMLElement | null)?.innerText?.trim() ?? '';
+        if (text.length > 3) { division = text; break; }
+      }
     }
-    return '';
-  });
 
-  const rows = page.locator('#collapseTwo table tbody tr');
-  const count = await rows.count();
+    const rows: Array<{ cells: string[]; href: string }> = [];
+    document.querySelectorAll('#collapseTwo table tbody tr').forEach((tr) => {
+      const tds = tr.querySelectorAll('td');
+      if (tds.length !== 8) return;
+      const cells = Array.from(tds, (td) => (td.innerText ?? td.textContent ?? '').trim().replace(/\s+/g, ' '));
+      const link = tds[0]?.querySelector('a');
+      const href = link?.getAttribute('href') ?? '';
+      rows.push({ cells, href });
+    });
+
+    return { division, rows };
+  });
 
   const matches: Match[] = [];
 
-  for (let i = 0; i < count; i++) {
-    const row = rows.nth(i);
-    const cells = row.locator('td');
-    if (await cells.count() !== 8) continue;
-
-    const c = await Promise.all(Array.from({ length: 8 }, (_, j) => cells.nth(j).innerText()));
-    const cleaned = c.map((t) => t.trim().replace(/\s+/g, ' '));
-
-    const href = await cells.nth(0).locator('a').getAttribute('href').catch(() => null);
-    const matchReportId = href?.match(/MatchReport\/View\/(\d+)/)?.[1] ?? '';
+  for (const { cells: cleaned, href } of rows) {
+    const matchReportId = href.match(/MatchReport\/View\/(\d+)/)?.[1] ?? '';
 
     const homeTeam = cleaned[2];
     const awayTeam = cleaned[3];
@@ -628,22 +632,43 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
   console.log(`\n[sync] Authenticated. URL: ${page.url()}`);
 
   // ── 0. Discover all Nesodden teams by age group (needed for file layout) ────
+  // Seed from existing club.json so that a failed discovery doesn't wipe known teams
+  const existingClub = readClubData();
+  const clubTeams: Record<string, typeof G16_TEAMS> = { ...(existingClub?.clubTeams ?? {}) };
+
   console.log('\n[sync] ── Discovering Nesodden teams by age group ──');
   const rawTeamsByAgeGroup = await scrapeClubTeamsByAgeGroup(page, NESODDEN_CLUB_ID);
-  const clubTeams: Record<string, typeof G16_TEAMS> = {};
   for (const [ageGroup, teamList] of Object.entries(rawTeamsByAgeGroup)) {
     clubTeams[ageGroup] = teamList.map(({ fiksId, name }) => {
       const known = G16_TEAMS.find((t) => t.fiksId === fiksId);
+      // Preserve existing fields (division, tournamentFiksId) if not discovered
+      const existing = (existingClub?.clubTeams?.[ageGroup] ?? []).find(t => t.fiksId === fiksId);
       return {
         fiksId,
         name,
-        division:   known?.division ?? '',
+        division:   known?.division ?? existing?.division ?? '',
         clubFiksId: NESODDEN_CLUB_ID,
         logoUrl:    `https://images.fotball.no/clublogos/${NESODDEN_CLUB_ID}.png`,
+        ...(existing?.tournamentFiksId ? { tournamentFiksId: existing.tournamentFiksId } : {}),
       };
     });
   }
   console.log(`  → found age groups: ${Object.keys(clubTeams).sort().join(', ')}`);
+
+  // Fallback: if Playwright discovery found nothing new, try Cheerio via fotball.no
+  if (Object.keys(rawTeamsByAgeGroup).length === 0) {
+    console.log('  → Playwright discovery empty, trying fotball.no…');
+    const cheerioTeams = await scrapeClubTeams(NESODDEN_CLUB_ID);
+    for (const [ag, teams] of Object.entries(cheerioTeams)) {
+      if (!clubTeams[ag]) clubTeams[ag] = [];
+      for (const t of teams) {
+        if (!clubTeams[ag].some(e => e.fiksId === t.fiksId)) {
+          clubTeams[ag].push(t);
+        }
+      }
+    }
+    console.log(`  → after fallback: ${Object.keys(clubTeams).sort().join(', ')}`);
+  }
 
   // Update teamsToSync with live names from FIKS (handles team renames)
   const allDiscoveredTeams = Object.values(clubTeams).flat();
@@ -752,6 +777,30 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
   // Write club data after Nesodden team loop so it includes live divisions
   writeClubData({ clubTeams, lastSynced: new Date().toISOString() });
 
+  // ── 1b. Scrape tournament standings for each team ────────────────────────────
+  const standingsData = readStandings();
+  const seenTournaments = new Set<string>();
+  for (const teams of Object.values(clubTeams)) {
+    for (const team of teams) {
+      if (!team.tournamentFiksId || seenTournaments.has(team.tournamentFiksId)) continue;
+      seenTournaments.add(team.tournamentFiksId);
+      process.stdout.write(`  [standings] ${team.division || team.tournamentFiksId} … `);
+      const result = await scrapeTournamentStandings(team.tournamentFiksId);
+      if (result.standings.length > 0) {
+        standingsData[team.tournamentFiksId] = {
+          standings: result.standings,
+          tournament: result.tournament,
+          lastUpdated: new Date().toISOString(),
+        };
+        console.log(`${result.standings.length} teams`);
+      } else {
+        console.log('no data');
+      }
+    }
+  }
+  writeStandings(standingsData);
+  console.log(`[sync] ✅ Standings saved (${seenTournaments.size} tournaments)`);
+
   // ── 2. Logo pass for Nesodden matches ────────────────────────────────────────
   // Include matches from non-synced teams (already on disk) for a complete club-ID map
   for (const [ag, teams] of Object.entries(clubTeams)) {
@@ -797,10 +846,14 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       if (visited.has(m.matchReportId!)) continue;
       visited.add(m.matchReportId!);
       process.stdout.write(`  [logo] ${m.homeTeam} vs ${m.awayTeam} … `);
-      const ids = await scrapeClubIds(page, m.matchReportId!);
-      if (ids.homeClubId) clubIdByName[m.homeTeam.toLowerCase()] = ids.homeClubId;
-      if (ids.awayClubId) clubIdByName[m.awayTeam.toLowerCase()] = ids.awayClubId;
-      console.log(`home:${ids.homeClubId} away:${ids.awayClubId}`);
+      try {
+        const ids = await scrapeClubIds(page, m.matchReportId!);
+        if (ids.homeClubId) clubIdByName[m.homeTeam.toLowerCase()] = ids.homeClubId;
+        if (ids.awayClubId) clubIdByName[m.awayTeam.toLowerCase()] = ids.awayClubId;
+        console.log(`home:${ids.homeClubId} away:${ids.awayClubId}`);
+      } catch (e) {
+        console.log(`skipped (${(e as Error).message?.split('\n')[0]})`);
+      }
     }
   }
 
