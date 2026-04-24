@@ -1,4 +1,5 @@
-import { findAgeGroup, readTeamData, readSquads, readClubData, readStandings } from './fiksSync';
+import { findAgeGroup, readTeamData, readSquads, readClubData, readStandings, writeStandings } from './fiksSync';
+import { scrapeTournamentStandings } from './scraper';
 import type {
   Match,
   Squad,
@@ -7,6 +8,9 @@ import type {
   PlayerCardStats,
   TeamStatsResponse,
 } from './types';
+
+/** Standings are considered fresh for 5 minutes */
+const STANDINGS_TTL_MS = 5 * 60 * 1000;
 
 function primaryTournament(matches: Match[]): string {
   const counts = new Map<string, number>();
@@ -123,7 +127,41 @@ function resolveTournamentFiksId(fiksId: string): string | null {
   return null;
 }
 
-export function computeTeamStats(fiksId: string): TeamStatsResponse | null {
+/**
+ * Refresh standings from fotball.no if the cached entry is stale (older than TTL).
+ * Runs inline — the Cheerio scrape is fast (~200ms), no auth needed.
+ */
+async function refreshStandingsIfStale(
+  tournamentFiksId: string,
+): Promise<{ standings: StandingsEntry[]; tournament: string }> {
+  const allStandings = readStandings();
+  const cached = allStandings[tournamentFiksId];
+
+  const isStale = !cached
+    || !cached.lastUpdated
+    || Date.now() - new Date(cached.lastUpdated).getTime() > STANDINGS_TTL_MS;
+
+  if (!isStale && cached?.standings?.length) {
+    return { standings: cached.standings, tournament: cached.tournament };
+  }
+
+  // Scrape fresh standings
+  const scraped = await scrapeTournamentStandings(tournamentFiksId);
+  if (scraped.standings.length > 0) {
+    allStandings[tournamentFiksId] = {
+      standings: scraped.standings,
+      tournament: scraped.tournament,
+      lastUpdated: new Date().toISOString(),
+    };
+    try { writeStandings(allStandings); } catch { /* non-fatal */ }
+    return scraped;
+  }
+
+  // Scrape returned nothing — keep stale data if we have it
+  return cached ?? { standings: [], tournament: '' };
+}
+
+export async function computeTeamStats(fiksId: string): Promise<TeamStatsResponse | null> {
   const ageGroup = findAgeGroup(fiksId);
   if (!ageGroup) return null;
 
@@ -139,16 +177,16 @@ export function computeTeamStats(fiksId: string): TeamStatsResponse | null {
 
   const squads = readSquads();
 
-  // Read cached standings (populated by sync)
+  // Read or refresh cached standings
   let standings: StandingsEntry[] = [];
   let tournamentName = tournament || teamData.matches[0]?.tournament || '';
 
   const tournamentFiksId = resolveTournamentFiksId(fiksId);
   if (tournamentFiksId) {
-    const cached = readStandings()[tournamentFiksId];
-    if (cached?.standings?.length) {
-      standings = cached.standings;
-      if (cached.tournament) tournamentName = cached.tournament;
+    const result = await refreshStandingsIfStale(tournamentFiksId);
+    if (result.standings.length) {
+      standings = result.standings;
+      if (result.tournament) tournamentName = result.tournament;
     }
   }
 

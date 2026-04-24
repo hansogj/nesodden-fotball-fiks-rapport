@@ -85,6 +85,16 @@ export default defineConfig({
       },
     },
 
+    // Standings accuracy: verifies app standings match fotball.no for all teams
+    {
+      name: 'standings-accuracy',
+      testMatch: '**/standings-accuracy.spec.ts',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://localhost:3210',
+      },
+    },
+
     // Match completeness: verifies app match lists match FIKS for all synced teams
     {
       name: 'match-completeness',

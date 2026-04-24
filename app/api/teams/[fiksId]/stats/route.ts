@@ -6,7 +6,7 @@ export async function GET(
   { params }: { params: Promise<{ fiksId: string }> }
 ) {
   const { fiksId } = await params;
-  const stats = computeTeamStats(fiksId);
+  const stats = await computeTeamStats(fiksId);
 
   if (!stats) {
     return NextResponse.json({ error: 'No stats available' }, { status: 404 });
