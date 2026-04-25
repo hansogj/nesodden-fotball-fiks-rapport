@@ -1,4 +1,4 @@
-import { findAgeGroup, readTeamData, readSquads, readClubData, readStandings, writeStandings } from './fiksSync';
+import { findAgeGroup, readTeamData, readSquads, readClubData, readStandings, writeStandings, readOpponents } from './fiksSync';
 import { scrapeTournamentStandings } from './scraper';
 import type {
   Match,
@@ -161,6 +161,58 @@ async function refreshStandingsIfStale(
   return cached ?? { standings: [], tournament: '' };
 }
 
+/**
+ * Collect all matches in the tournament from Nesodden data + opponents.
+ * A match counts as a tournament match if both teams are in the standings.
+ */
+function collectTournamentMatches(
+  standings: StandingsEntry[],
+  nesoddenMatches: Match[],
+  nesoddenFiksId: string,
+): Match[] {
+  if (standings.length === 0) return nesoddenMatches;
+
+  const tournamentTeamIds = new Set(standings.map(s => s.teamFiksId));
+  // Fallback: resolve team ID by name when homeTeamId/awayTeamId are empty
+  const teamIdByName = new Map<string, string>();
+  for (const s of standings) {
+    if (s.teamFiksId && s.teamName) {
+      teamIdByName.set(s.teamName.toLowerCase(), s.teamFiksId);
+    }
+  }
+
+  function resolveTeamId(teamId: string, teamName: string): string {
+    return teamId || teamIdByName.get(teamName.toLowerCase()) || '';
+  }
+
+  function isTournamentMatch(m: Match): boolean {
+    const homeId = resolveTeamId(m.homeTeamId, m.homeTeam);
+    const awayId = resolveTeamId(m.awayTeamId, m.awayTeam);
+    return tournamentTeamIds.has(homeId) && tournamentTeamIds.has(awayId);
+  }
+
+  const all: Match[] = [];
+
+  // Add Nesodden's tournament matches
+  for (const m of nesoddenMatches) {
+    if (isTournamentMatch(m)) all.push(m);
+  }
+
+  // Add opponent tournament matches
+  const opponents = readOpponents();
+  if (opponents?.matches) {
+    for (const [teamFiksId, matches] of Object.entries(opponents.matches)) {
+      if (!tournamentTeamIds.has(teamFiksId)) continue;
+      for (const m of matches) {
+        if (isTournamentMatch(m)) all.push(m);
+      }
+    }
+  }
+
+  // computeTopScorers deduplicates by matchReportId, so duplicates are safe
+  return all;
+}
+
 export async function computeTeamStats(fiksId: string): Promise<TeamStatsResponse | null> {
   const ageGroup = findAgeGroup(fiksId);
   if (!ageGroup) return null;
@@ -190,9 +242,13 @@ export async function computeTeamStats(fiksId: string): Promise<TeamStatsRespons
     }
   }
 
+  // Gather ALL tournament matches for league-wide top scorers.
+  // A match is a "tournament match" if both teams appear in the standings.
+  const allTournamentMatches = collectTournamentMatches(standings, teamMatches, fiksId);
+
   return {
     standings,
-    seriesTopScorers: computeTopScorers(teamMatches, squads, null, 10),
+    seriesTopScorers: computeTopScorers(allTournamentMatches, squads, null, 10),
     teamTopScorers: computeTopScorers(teamMatches, squads, fiksId, 10),
     teamCards: computeCards(teamMatches, squads, fiksId),
     tournament: tournamentName,
