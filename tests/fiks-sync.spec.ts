@@ -1006,8 +1006,21 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
 
     // Scrape squads + events for ALL played matches (no lookback limit)
     let squadCount = 0;
-    let resolvedClubId = '';
     const localClubIdByName: Record<string, string> = { ...clubIdByName };
+
+    // Resolve clubId from the global name→clubId map (built during Nesodden logo pass).
+    // Opponent teams that appear in Nesodden's schedule already have known club IDs.
+    // Try exact match first, then prefix match (e.g., "Heming 2" matches "heming 2").
+    let resolvedClubId = localClubIdByName[meta.name.toLowerCase()] ?? '';
+    if (!resolvedClubId) {
+      const nameLower = meta.name.toLowerCase();
+      for (const [key, cid] of Object.entries(localClubIdByName)) {
+        if (key === nameLower || nameLower.startsWith(key) || key.startsWith(nameLower)) {
+          resolvedClubId = cid;
+          break;
+        }
+      }
+    }
 
     for (const match of teamMatches) {
       if (!match.matchReportId || !match.result) continue;
