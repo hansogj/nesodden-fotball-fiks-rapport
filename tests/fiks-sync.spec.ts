@@ -40,7 +40,7 @@ import {
   readOpponents, writeOpponents,
   readStandings, writeStandings,
 } from '../lib/fiksSync';
-import { scrapeTournamentStandings, scrapeClubTeams } from '../lib/scraper';
+import { scrapeTournamentStandings, scrapeClubTeams, scrapeTeamMatchList } from '../lib/scraper';
 import type { Match, Player, Squad, Team, OpponentTeam, MatchEvent, GoalType, CardType } from '../lib/types';
 
 const FIKS_BASE = 'https://fiks.fotball.no';
@@ -110,15 +110,17 @@ async function scrapeMatches(page: Page, team: Team): Promise<{ matches: Match[]
       }
     }
 
-    // Match rows
-    const rows: Array<{ cells: string[]; href: string }> = [];
+    // Match rows — also extract team page links from home/away columns for opponent ID discovery
+    const rows: Array<{ cells: string[]; href: string; homeTeamHref: string; awayTeamHref: string }> = [];
     document.querySelectorAll('#collapseTwo table tbody tr').forEach((tr) => {
       const tds = tr.querySelectorAll('td');
       if (tds.length !== 8) return;
       const cells = Array.from(tds, (td) => (td.innerText ?? td.textContent ?? '').trim().replace(/\s+/g, ' '));
       const link = tds[0]?.querySelector('a');
       const href = link?.getAttribute('href') ?? '';
-      rows.push({ cells, href });
+      const homeTeamHref = tds[2]?.querySelector('a[href*="/FiksWeb/Team/View/"]')?.getAttribute('href') ?? '';
+      const awayTeamHref = tds[3]?.querySelector('a[href*="/FiksWeb/Team/View/"]')?.getAttribute('href') ?? '';
+      rows.push({ cells, href, homeTeamHref, awayTeamHref });
     });
 
     return { division, rows };
@@ -128,7 +130,7 @@ async function scrapeMatches(page: Page, team: Team): Promise<{ matches: Match[]
 
   const matches: Match[] = [];
 
-  for (const { cells: cleaned, href } of rows) {
+  for (const { cells: cleaned, href, homeTeamHref, awayTeamHref } of rows) {
     const matchReportId = href.match(/MatchReport\/View\/(\d+)/)?.[1] ?? '';
 
     const matchId  = cleaned[0];
@@ -142,17 +144,21 @@ async function scrapeMatches(page: Page, team: Team): Promise<{ matches: Match[]
 
     const isHome = homeTeam.toLowerCase().includes('nesodden');
 
+    // Extract FIKS team IDs from the team-page links in the match table columns
+    const homeTeamFiksId = homeTeamHref.match(/Team\/View\/(\d+)/)?.[1] ?? '';
+    const awayTeamFiksId = awayTeamHref.match(/Team\/View\/(\d+)/)?.[1] ?? '';
+
     matches.push({
       matchId:       `fiks-${matchId}`,
       matchReportId,
       date,
       time,
       homeTeam,
-      homeTeamId:    isHome ? team.fiksId : '',
+      homeTeamId:    homeTeamFiksId || (isHome ? team.fiksId : ''),
       homeClubId:    isHome ? team.clubFiksId : '',
       homeLogoUrl:   isHome ? team.logoUrl : '',
       awayTeam,
-      awayTeamId:    isHome ? '' : team.fiksId,
+      awayTeamId:    awayTeamFiksId || (isHome ? '' : team.fiksId),
       awayClubId:    isHome ? '' : team.clubFiksId,
       awayLogoUrl:   isHome ? '' : team.logoUrl,
       venue,
@@ -197,14 +203,16 @@ async function scrapeOpponentTeamMatches(
       }
     }
 
-    const rows: Array<{ cells: string[]; href: string }> = [];
+    const rows: Array<{ cells: string[]; href: string; homeTeamHref: string; awayTeamHref: string }> = [];
     document.querySelectorAll('#collapseTwo table tbody tr').forEach((tr) => {
       const tds = tr.querySelectorAll('td');
       if (tds.length !== 8) return;
       const cells = Array.from(tds, (td) => (td.innerText ?? td.textContent ?? '').trim().replace(/\s+/g, ' '));
       const link = tds[0]?.querySelector('a');
       const href = link?.getAttribute('href') ?? '';
-      rows.push({ cells, href });
+      const homeTeamHref = tds[2]?.querySelector('a[href*="/FiksWeb/Team/View/"]')?.getAttribute('href') ?? '';
+      const awayTeamHref = tds[3]?.querySelector('a[href*="/FiksWeb/Team/View/"]')?.getAttribute('href') ?? '';
+      rows.push({ cells, href, homeTeamHref, awayTeamHref });
     });
 
     return { division, rows };
@@ -212,7 +220,7 @@ async function scrapeOpponentTeamMatches(
 
   const matches: Match[] = [];
 
-  for (const { cells: cleaned, href } of rows) {
+  for (const { cells: cleaned, href, homeTeamHref, awayTeamHref } of rows) {
     const matchReportId = href.match(/MatchReport\/View\/(\d+)/)?.[1] ?? '';
 
     const homeTeam = cleaned[2];
@@ -223,17 +231,20 @@ async function scrapeOpponentTeamMatches(
 
     if (!homeTeam || !awayTeam || !date) continue;
 
+    const homeTeamFiksId = homeTeamHref.match(/Team\/View\/(\d+)/)?.[1] ?? '';
+    const awayTeamFiksId = awayTeamHref.match(/Team\/View\/(\d+)/)?.[1] ?? '';
+
     matches.push({
       matchId:       `fiks-${cleaned[0]}`,
       matchReportId,
       date,
       time,
       homeTeam,
-      homeTeamId:    '', // filled after logo pass
+      homeTeamId:    homeTeamFiksId,
       homeClubId:    '',
       homeLogoUrl:   '',
       awayTeam,
-      awayTeamId:    '', // filled after logo pass
+      awayTeamId:    awayTeamFiksId,
       awayClubId:    '',
       awayLogoUrl:   '',
       venue,
@@ -879,14 +890,20 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
   }
 
-  // ── 3. Tournament teams pass ──────────────────────────────────────────────────
-  // For each tournament in standings, scrape ALL non-Nesodden teams' matches + squads.
-  // This gives us complete data for league-wide top scorers and spillerdeling.
+  // ── 3. Opponent team pass ─────────────────────────────────────────────────────
+  // Uses fotball.no standings to find all teams in each tournament, then
+  // scrapeTeamMatchList() (Cheerio, public) to get each team's match list and
+  // matchReportIds. Squad/event data is scraped from FIKS match report pages
+  // (accessible to any authenticated user, unlike FIKS team pages which only
+  // show full data to the owning club's admins).
+  //
+  // Scrapes ALL played matches with no lookback limit for complete tournament data.
+  // Incremental guard: skips match reports already in squads map with ready=true + events.
 
   // Build set of all Nesodden teamFiksIds (to skip)
   const nesoddenTeamIds = new Set(Object.values(clubTeams).flat().map(t => t.fiksId));
 
-  // Build tournamentFiksId → ageGroup map (for sibling team discovery)
+  // Build tournamentFiksId → ageGroup map from Nesodden's club data
   const tournamentAgeGroup: Record<string, string> = {};
   for (const [ag, teams] of Object.entries(clubTeams)) {
     for (const t of teams) {
@@ -894,198 +911,150 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
   }
 
-  // Collect all tournament teams to scrape: { teamFiksId, teamName, tournamentFiksId }
-  const tournamentTeamsToScrape: Array<{ teamFiksId: string; teamName: string; tournamentFiksId: string }> = [];
+  // Collect all non-Nesodden teams from standings (unique by teamFiksId)
+  const tournamentTeams = new Map<string, { name: string; tournamentFiksId: string; ageGroup: string }>();
   for (const [tournamentFiksId, entry] of Object.entries(standingsData)) {
     if (!entry.standings?.length) continue;
+    const ag = tournamentAgeGroup[tournamentFiksId] ?? '';
     for (const s of entry.standings) {
       if (!s.teamFiksId || nesoddenTeamIds.has(s.teamFiksId)) continue;
-      tournamentTeamsToScrape.push({
-        teamFiksId: s.teamFiksId,
-        teamName: s.teamName,
-        tournamentFiksId,
-      });
+      if (!tournamentTeams.has(s.teamFiksId)) {
+        tournamentTeams.set(s.teamFiksId, { name: s.teamName, tournamentFiksId, ageGroup: ag });
+      }
     }
   }
 
-  // Deduplicate (a team could appear in multiple standings snapshots)
-  const seenTeamIds = new Set<string>();
-  const uniqueTournamentTeams = tournamentTeamsToScrape.filter(t => {
-    if (seenTeamIds.has(t.teamFiksId)) return false;
-    seenTeamIds.add(t.teamFiksId);
-    return true;
-  });
+  console.log(`\n[sync] ── Opponent pass: ${tournamentTeams.size} non-Nesodden teams from standings ──`);
 
-  console.log(`\n[sync] ── Tournament teams pass: ${uniqueTournamentTeams.length} non-Nesodden teams across ${Object.keys(standingsData).length} tournaments ──`);
-
-  // Helper: scrape squad for a match (shared between tournament pass and sibling pass)
-  async function scrapeTeamMatchSquad(
-    match: Match,
-    localClubIdByName: Record<string, string>,
+  // Helper: scrape squad for a played match (incremental guard + events backfill)
+  async function scrapeMatchSquad(
+    matchReportId: string,
+    homeTeam: string,
+    awayTeam: string,
+    date: string,
     label: string,
-  ): Promise<boolean> {
-    if (!match.matchReportId || !match.result) return false;
+  ): Promise<{ homeClubId: string; awayClubId: string } | null> {
+    const existingSquad = squads[matchReportId];
+    const isIncomplete = existingSquad?.ready
+      && (existingSquad.home.length === 0 || existingSquad.away.length === 0);
 
-    const existingOppSquad = squads[match.matchReportId];
-    const isOppIncomplete = existingOppSquad?.ready
-      && (existingOppSquad.home.length === 0 || existingOppSquad.away.length === 0);
-
-    if (existingOppSquad?.ready && !isOppIncomplete) {
-      // Backfill events for squads scraped before event extraction was added
-      if (!('events' in existingOppSquad)) {
-        process.stdout.write(`      [events backfill] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
-        const events = await scrapeEventsOnly(page, match.matchReportId, match.homeTeam);
-        existingOppSquad.events = events;
+    if (existingSquad?.ready && !isIncomplete) {
+      if (!('events' in existingSquad)) {
+        process.stdout.write(`      [events backfill] ${date} ${homeTeam} vs ${awayTeam} … `);
+        const events = await scrapeEventsOnly(page, matchReportId, homeTeam);
+        existingSquad.events = events;
         console.log(events.length > 0
           ? `${events.length} events: ${events.filter(e=>e.type==='goal').length} goals, ${events.filter(e=>e.type==='card').length} cards`
           : 'no events');
       }
-      // Collect club IDs from already-scraped squads
-      localClubIdByName[match.homeTeam.toLowerCase()] ||= extractClubIdFromLogoUrl(match.homeLogoUrl);
-      localClubIdByName[match.awayTeam.toLowerCase()] ||= extractClubIdFromLogoUrl(match.awayLogoUrl);
-      return true; // already cached
+      return null; // already cached — no new club IDs to return
     }
 
-    if (isOppIncomplete) {
-      process.stdout.write(`      [${label} rescrape] ${match.date} ${match.homeTeam} vs ${match.awayTeam} (missing ${existingOppSquad.home.length === 0 ? 'home' : 'away'}) … `);
+    // Already visited (has events key, even empty) but not ready (no squad registered).
+    // Past match data doesn't change on FIKS — skip re-scraping.
+    if (existingSquad && 'events' in existingSquad) {
+      return null;
+    }
+
+    if (isIncomplete) {
+      process.stdout.write(`      [${label} rescrape] ${date} ${homeTeam} vs ${awayTeam} (missing ${existingSquad.home.length === 0 ? 'home' : 'away'}) … `);
     } else {
-      process.stdout.write(`      [${label}] ${match.date} ${match.homeTeam} vs ${match.awayTeam} … `);
+      process.stdout.write(`      [${label}] ${date} ${homeTeam} vs ${awayTeam} … `);
     }
-    const squad = await scrapeSquad(page, match.matchReportId, match.homeTeam);
-    const { homeClubId: hId, awayClubId: aId, ...squadData } = squad;
-    squads[match.matchReportId] = squadData;
 
-    if (hId) {
-      match.homeLogoUrl = `https://images.fotball.no/clublogos/${hId}.png`;
-      localClubIdByName[match.homeTeam.toLowerCase()] = hId;
-    }
-    if (aId) {
-      match.awayLogoUrl = `https://images.fotball.no/clublogos/${aId}.png`;
-      localClubIdByName[match.awayTeam.toLowerCase()] = aId;
-    }
+    const squad = await scrapeSquad(page, matchReportId, homeTeam);
+    const { homeClubId: hId, awayClubId: aId, ...squadData } = squad;
+    squads[matchReportId] = squadData;
 
     if (squad.ready) {
       console.log(`✓ home:${squad.home.length} away:${squad.away.length}`);
-      return true;
     } else {
       console.log('ikke klar enda');
-      return false;
     }
+
+    return { homeClubId: hId, awayClubId: aId };
   }
 
-  // 3a. Scrape tournament teams: match lists + squads for ALL played matches
-  for (const { teamFiksId, teamName, tournamentFiksId } of uniqueTournamentTeams) {
-    process.stdout.write(`  [tournament] ${teamName} (${teamFiksId}) … `);
+  for (const [teamFiksId, meta] of tournamentTeams) {
+    process.stdout.write(`  [opp-team] ${meta.name} (${teamFiksId}) … `);
 
-    const { matches: teamMatches, division } = await scrapeOpponentTeamMatches(page, teamFiksId);
-    console.log(`${teamMatches.length} matches, division: "${division}"`);
+    // Get full match list from fotball.no (public, no auth needed)
+    const publicMatches = await scrapeTeamMatchList(teamFiksId);
+    console.log(`${publicMatches.length} matches`);
+
+    if (publicMatches.length === 0) continue;
+
+    // Build Match objects for opponents.json storage
+    const teamMatches: Match[] = publicMatches.map(pm => ({
+      matchId:      `fiks-${pm.matchReportId}`,
+      matchReportId: pm.matchReportId,
+      date:         pm.date,
+      time:         pm.time,
+      homeTeam:     pm.homeTeam,
+      homeTeamId:   '',
+      homeClubId:   '',
+      homeLogoUrl:  '',
+      awayTeam:     pm.awayTeam,
+      awayTeamId:   '',
+      awayClubId:   '',
+      awayLogoUrl:  '',
+      venue:        '',
+      tournament:   '',
+      isHome:       false,
+      result:       pm.result,
+    }));
+
+    // Scrape squads + events for ALL played matches (no lookback limit)
+    let squadCount = 0;
+    let resolvedClubId = '';
+    const localClubIdByName: Record<string, string> = { ...clubIdByName };
+
+    for (const match of teamMatches) {
+      if (!match.matchReportId || !match.result) continue;
+
+      const clubIds = await scrapeMatchSquad(
+        match.matchReportId, match.homeTeam, match.awayTeam, match.date, 'squad',
+      );
+      if (clubIds === null) {
+        // Already cached — try to recover club IDs from existing logo data
+        localClubIdByName[match.homeTeam.toLowerCase()] ||= extractClubIdFromLogoUrl(match.homeLogoUrl);
+        localClubIdByName[match.awayTeam.toLowerCase()] ||= extractClubIdFromLogoUrl(match.awayLogoUrl);
+        squadCount++;
+        continue;
+      }
+      if (clubIds.homeClubId) {
+        match.homeLogoUrl = `https://images.fotball.no/clublogos/${clubIds.homeClubId}.png`;
+        localClubIdByName[match.homeTeam.toLowerCase()] = clubIds.homeClubId;
+      }
+      if (clubIds.awayClubId) {
+        match.awayLogoUrl = `https://images.fotball.no/clublogos/${clubIds.awayClubId}.png`;
+        localClubIdByName[match.awayTeam.toLowerCase()] = clubIds.awayClubId;
+      }
+      if (squads[match.matchReportId]?.ready) squadCount++;
+
+      // Resolve this team's clubId from match data
+      if (!resolvedClubId) {
+        const teamNameLower = meta.name.toLowerCase();
+        resolvedClubId = localClubIdByName[teamNameLower]
+          || (match.homeTeam.toLowerCase().includes(meta.name.toLowerCase().split(' ')[0]?.toLowerCase() ?? '') ? clubIds.homeClubId : '')
+          || (match.awayTeam.toLowerCase().includes(meta.name.toLowerCase().split(' ')[0]?.toLowerCase() ?? '') ? clubIds.awayClubId : '');
+      }
+    }
+
+    applyClubIds([teamMatches], localClubIdByName, teamFiksId, resolvedClubId);
+    Object.assign(clubIdByName, localClubIdByName);
 
     opponentTeams[teamFiksId] = {
       fiksId: teamFiksId,
-      name: teamName,
-      clubId: '', // filled during squad scraping via club ID extraction
-      division,
-      tournamentFiksId,
+      name: meta.name,
+      clubId: resolvedClubId,
+      division: '',
+      ageGroup: meta.ageGroup,
+      tournamentFiksId: meta.tournamentFiksId,
     };
-
-    const localClubIdByName: Record<string, string> = { ...clubIdByName };
-
-    // Scrape squads for ALL played matches (no lookback limit — need complete event data)
-    let squadCount = 0;
-    for (const match of teamMatches) {
-      const scraped = await scrapeTeamMatchSquad(match, localClubIdByName, 'squad');
-      if (scraped) squadCount++;
-    }
-
-    // Apply club IDs + set teamFiksId / isHome on all matches for this team
-    // Resolve clubId for this team from collected data
-    const resolvedClubId = localClubIdByName[teamName.toLowerCase()] ?? '';
-    applyClubIds([teamMatches], localClubIdByName, teamFiksId, resolvedClubId);
-
-    // Update the opponentTeam's clubId now that we've resolved it
-    if (resolvedClubId) {
-      opponentTeams[teamFiksId].clubId = resolvedClubId;
-    }
-
-    // Merge into global clubIdByName for future teams
-    Object.assign(clubIdByName, localClubIdByName);
 
     opponentMatches[teamFiksId] = teamMatches;
     console.log(`    → ${squadCount} squads scraped/cached`);
-  }
-
-  // 3b. Sibling team discovery for spillerdeling
-  // For each unique club with a team in the tournament, find sibling teams
-  // in the same age group (potentially in different tournaments) and scrape
-  // their recent matches so /api/clubs/{clubId}/squads can detect player sharing.
-  const siblingClubIds = new Set<string>();
-  for (const t of Object.values(opponentTeams)) {
-    if (t.clubId && t.clubId !== NESODDEN_CLUB_ID && t.tournamentFiksId) {
-      siblingClubIds.add(t.clubId);
-    }
-  }
-
-  const lookback_ms = OPPONENT_SQUAD_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
-  const nowSibling = Date.now();
-
-  if (siblingClubIds.size > 0) {
-    console.log(`\n[sync] ── Sibling team discovery: ${siblingClubIds.size} clubs ──`);
-
-    for (const clubId of siblingClubIds) {
-      // Find which age groups this club's tournament teams play in
-      const clubAgeGroups = new Set<string>();
-      for (const t of Object.values(opponentTeams)) {
-        if (t.clubId === clubId && t.tournamentFiksId) {
-          const ag = tournamentAgeGroup[t.tournamentFiksId];
-          if (ag) clubAgeGroups.add(ag);
-        }
-      }
-      if (clubAgeGroups.size === 0) continue;
-
-      // Discover all teams for this club grouped by age group
-      const allClubTeams = await scrapeClubTeamsByAgeGroup(page, clubId);
-
-      for (const ag of clubAgeGroups) {
-        const agTeams = allClubTeams[ag] ?? [];
-        for (const { fiksId: sibFiksId, name: sibName } of agTeams) {
-          // Skip teams already scraped (tournament teams or Nesodden)
-          if (opponentMatches[sibFiksId] || nesoddenTeamIds.has(sibFiksId)) continue;
-
-          process.stdout.write(`    [sibling] ${sibName} (${sibFiksId}) … `);
-
-          const { matches: sibMatches, division: sibDivision } = await scrapeOpponentTeamMatches(page, sibFiksId);
-          console.log(`${sibMatches.length} matches, division: "${sibDivision}"`);
-
-          opponentTeams[sibFiksId] = {
-            fiksId: sibFiksId,
-            name: sibName,
-            clubId,
-            division: sibDivision,
-          };
-
-          const localClubIdByName: Record<string, string> = { ...clubIdByName };
-
-          // Scrape squads for played matches within lookback window (60 days)
-          let squadCount = 0;
-          for (const match of sibMatches) {
-            if (!match.matchReportId || !match.result) continue;
-
-            const [d, mo, y] = match.date.split('.').map(Number);
-            const matchTime = new Date(y, mo - 1, d).getTime();
-            if (nowSibling - matchTime > lookback_ms) continue;
-
-            const scraped = await scrapeTeamMatchSquad(match, localClubIdByName, 'sibling');
-            if (scraped) squadCount++;
-          }
-
-          applyClubIds([sibMatches], localClubIdByName, sibFiksId, clubId);
-          Object.assign(clubIdByName, localClubIdByName);
-
-          opponentMatches[sibFiksId] = sibMatches;
-          console.log(`      → ${squadCount} squads scraped/cached`);
-        }
-      }
-    }
   }
 
   // ── 4. Write shared data ────────────────────────────────────────────────────

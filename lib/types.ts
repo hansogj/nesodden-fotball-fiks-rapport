@@ -57,6 +57,7 @@ export interface OpponentTeam {
   name: string;
   clubId: string;
   division: string;
+  ageGroup?: string;
   tournamentFiksId?: string;
 }
 

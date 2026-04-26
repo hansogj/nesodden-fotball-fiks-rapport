@@ -162,54 +162,28 @@ async function refreshStandingsIfStale(
 }
 
 /**
- * Collect all matches in the tournament from Nesodden data + opponents.
- * A match counts as a tournament match if both teams are in the standings.
+ * Collect all tournament matches from Nesodden data + opponents in the same age group.
+ *
+ * Opponent teams discovered via the sync's club-based pass all have an `ageGroup` field.
+ * By matching on age group we avoid the ID-space mismatch between fotball.no (standings)
+ * and FIKS internal team IDs (opponents.json). computeTopScorers deduplicates by
+ * matchReportId so matches shared between two opponents' lists are counted once.
  */
 function collectTournamentMatches(
-  standings: StandingsEntry[],
+  ageGroup: string,
   nesoddenMatches: Match[],
-  nesoddenFiksId: string,
 ): Match[] {
-  if (standings.length === 0) return nesoddenMatches;
-
-  const tournamentTeamIds = new Set(standings.map(s => s.teamFiksId));
-  // Fallback: resolve team ID by name when homeTeamId/awayTeamId are empty
-  const teamIdByName = new Map<string, string>();
-  for (const s of standings) {
-    if (s.teamFiksId && s.teamName) {
-      teamIdByName.set(s.teamName.toLowerCase(), s.teamFiksId);
-    }
-  }
-
-  function resolveTeamId(teamId: string, teamName: string): string {
-    return teamId || teamIdByName.get(teamName.toLowerCase()) || '';
-  }
-
-  function isTournamentMatch(m: Match): boolean {
-    const homeId = resolveTeamId(m.homeTeamId, m.homeTeam);
-    const awayId = resolveTeamId(m.awayTeamId, m.awayTeam);
-    return tournamentTeamIds.has(homeId) && tournamentTeamIds.has(awayId);
-  }
-
-  const all: Match[] = [];
-
-  // Add Nesodden's tournament matches
-  for (const m of nesoddenMatches) {
-    if (isTournamentMatch(m)) all.push(m);
-  }
-
-  // Add opponent tournament matches
   const opponents = readOpponents();
-  if (opponents?.matches) {
-    for (const [teamFiksId, matches] of Object.entries(opponents.matches)) {
-      if (!tournamentTeamIds.has(teamFiksId)) continue;
-      for (const m of matches) {
-        if (isTournamentMatch(m)) all.push(m);
-      }
-    }
+  if (!opponents?.matches) return nesoddenMatches;
+
+  const all: Match[] = [...nesoddenMatches];
+
+  for (const [teamFiksId, matches] of Object.entries(opponents.matches)) {
+    const opTeam = opponents.teams[teamFiksId];
+    if (!opTeam || opTeam.ageGroup !== ageGroup) continue;
+    all.push(...matches);
   }
 
-  // computeTopScorers deduplicates by matchReportId, so duplicates are safe
   return all;
 }
 
@@ -243,8 +217,8 @@ export async function computeTeamStats(fiksId: string): Promise<TeamStatsRespons
   }
 
   // Gather ALL tournament matches for league-wide top scorers.
-  // A match is a "tournament match" if both teams appear in the standings.
-  const allTournamentMatches = collectTournamentMatches(standings, teamMatches, fiksId);
+  // Uses age group to match opponent teams (avoids fotball.no vs FIKS ID mismatch).
+  const allTournamentMatches = collectTournamentMatches(ageGroup, teamMatches);
 
   return {
     standings,

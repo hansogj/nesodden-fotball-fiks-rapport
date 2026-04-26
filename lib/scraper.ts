@@ -2,6 +2,15 @@ import axios from 'axios';
 import { load } from 'cheerio';
 import type { StandingsEntry, Team } from './types';
 
+export interface PublicMatchInfo {
+  matchReportId: string;
+  date: string;       // dd.mm.yyyy
+  time: string;
+  homeTeam: string;
+  awayTeam: string;
+  result?: string;    // e.g. "4-3", undefined if not played
+}
+
 const BASE = 'https://www.fotball.no/fotballdata';
 const FOTBALL_NO = 'https://www.fotball.no';
 // Season ID on fotball.no — update each year (110 = 2026)
@@ -181,5 +190,82 @@ export async function scrapeTournamentStandings(tournamentFiksId: string): Promi
     return { standings, tournament };
   } catch {
     return { standings: [], tournament: '' };
+  }
+}
+
+// ── Team match list (public fotball.no) ───────────────────────────────────────
+
+/**
+ * Scrape a team's full match list from the public fotball.no team page.
+ * Returns matches with matchReportId values that are identical to FIKS
+ * matchReportIds — usable directly with scrapeSquad().
+ *
+ * This is the correct way to get all matches for a team we don't admin in FIKS,
+ * since FIKS team pages only show full match tables to the owning club's admins.
+ */
+export async function scrapeTeamMatchList(teamFiksId: string): Promise<PublicMatchInfo[]> {
+  try {
+    const res = await httpClient.get(
+      `${BASE}/lag/hjem/?fiksId=${teamFiksId}`,
+      { timeout: 8000 },
+    );
+    const $ = load(res.data as string);
+    const matches: PublicMatchInfo[] = [];
+    const seen = new Set<string>();
+
+    // Row structure (from fotball.no table):
+    //   td[0] <a kamp>dd.mm.yyyy</a>   date (as a match link)
+    //   td[1]  day-of-week text
+    //   td[2]  HH:MM                   time
+    //   td[3] <a lag>HomeTeam</a>       home team
+    //   td[4] <a kamp>N - N</a>         score (or nothing for upcoming)
+    //   td[5] <a lag>AwayTeam</a>       away team
+    //   td[6] venue, td[7] tournament, …
+    $('tr').each((_, row) => {
+      const matchLinks = $(row).find('a[href*="/fotballdata/kamp/"]');
+      if (matchLinks.length === 0) return;
+
+      // Get matchReportId from any match link
+      const matchHref = matchLinks.first().attr('href') ?? '';
+      const matchReportId = matchHref.match(/fiksId=(\d+)/)?.[1] ?? '';
+      if (!matchReportId || seen.has(matchReportId)) return;
+      seen.add(matchReportId);
+
+      // Date: match link whose text is a date
+      let date = '';
+      matchLinks.each((_, el) => {
+        const text = $(el).text().trim();
+        if (/^\d{2}\.\d{2}\.\d{4}$/.test(text)) date = text;
+      });
+
+      // Time: td whose text is exactly HH:MM
+      let time = '';
+      $(row).find('td').each((_, td) => {
+        const text = $(td).text().trim();
+        if (/^\d{2}:\d{2}$/.test(text) && !time) time = text;
+      });
+
+      // Teams: links to /fotballdata/lag/hjem/
+      const teamLinks = $(row).find('a[href*="/fotballdata/lag/hjem/"]');
+      const homeTeam = teamLinks.eq(0).text().trim();
+      const awayTeam = teamLinks.eq(1).text().trim();
+
+      // Score: match link whose text is "N - N" (played) — undefined if upcoming
+      let result: string | undefined;
+      matchLinks.each((_, el) => {
+        const text = $(el).text().trim();
+        if (/^\d+\s*-\s*\d+$/.test(text)) {
+          result = text.replace(/\s+/g, '');
+        }
+      });
+
+      if (matchReportId) {
+        matches.push({ matchReportId, date, time, homeTeam, awayTeam, result });
+      }
+    });
+
+    return matches;
+  } catch {
+    return [];
   }
 }
