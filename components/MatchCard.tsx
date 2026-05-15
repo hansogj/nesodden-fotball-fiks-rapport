@@ -1,6 +1,6 @@
 'use client';
 import { useState, useCallback, memo } from 'react';
-import type { Match, Player, Team, MatchEvent } from '@/lib/types';
+import type { Match, Player, MatchEvent } from '@/lib/types';
 import { TeamEmblem } from './TeamEmblem';
 import { PlayerList } from './PlayerList';
 import { CrossTeamPlayers } from './CrossTeamPlayers';
@@ -18,9 +18,9 @@ function isPastMatch(date: string, time: string): boolean {
   }
 }
 
-interface Props { match: Match; nesoddenTeamId: string; allTeams: Team[] }
+interface Props { match: Match; nesoddenTeamId: string }
 
-export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTeams }: Props) {
+export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId }: Props) {
   const [open, setOpen] = useState(false);
   const [nesoddenPlayers, setNesoddenPlayers] = useState<Player[] | null>(null);
   const [opponentPlayers, setOpponentPlayers] = useState<Player[] | null>(null);
@@ -190,11 +190,10 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, allTea
               {((nesoddenPlayers?.length ?? 0) > 0 || (opponentPlayers?.length ?? 0) > 0) && (
                 <CrossTeamPlayers
                   nesoddenPlayers={nesoddenPlayers ?? []}
-                  currentTeamFiksId={nesoddenTeamId}
-                  allTeams={allTeams}
                   opponentPlayers={opponentPlayers ?? []}
                   opponentClubId={isHomeNesodden ? match.awayClubId : match.homeClubId}
                   currentMatchReportId={match.matchReportId}
+                  isHomeNesodden={isHomeNesodden}
                 />
               )}
             </>

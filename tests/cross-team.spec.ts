@@ -2,14 +2,14 @@
  * Cross-team player detection tests.
  *
  * Verifies that CrossTeamPlayers correctly identifies players in the current
- * match's kamptropp who also appeared in a sister team's most recent match.
+ * match's kamptropp who also appeared in a sibling team's matches.
  *
  * All API responses are mocked via page.route() — no FIKS credentials needed.
  *
  * Division hierarchy (lower number = higher level):
  *   G16-1: 'G16 2. divisjon'        → rank 2 (highest)
- *   G16-3: 'G16 3. divisjon avd 03' → rank 3
- *   G16-2: 'G16 4. divisjon avd 02' → rank 4 (lowest)
+ *   G16-2: 'G16 3. divisjon avd 03' → rank 3
+ *   G16-3: 'G16 4. divisjon avd 02' → rank 4 (lowest)
  */
 import { test, expect, type Page } from '@playwright/test';
 
@@ -17,8 +17,8 @@ const APP = 'http://localhost:3210';
 
 // FIKS IDs matching G16_TEAMS in lib/mockData.ts
 const G16_1 = '134742';
-const G16_2 = '6895';
-const G16_3 = '154500';
+const G16_2 = '154500';
+const G16_3 = '6895';
 
 // Unique squad IDs that won't clash with real FIKS data
 const SQUAD_CURRENT = 'crosstest-squad-current';
@@ -85,6 +85,70 @@ const G161_UPCOMING: Record<string, unknown> = {
   isHome: true, matchReportId: SQUAD_CURRENT,
 };
 
+// ── ClubAppearance helpers ───────────────────────────────────────────────────
+
+/**
+ * Build a ClubAppearance for a Nesodden sibling team's match.
+ * The API returns these from /api/clubs/82/squads — already filtered to sibling teams only.
+ */
+function nesoddenAppearance(opts: {
+  teamFiksId: string;
+  teamName: string;
+  division: string;
+  isHigher: boolean;
+  matchReportId: string;
+  date: string;
+  homeTeam: string;
+  awayTeam: string;
+  clubSide: 'home' | 'away';
+  squadPlayers: Array<{ name: string; jerseyNumber: number; position: string }>;
+}) {
+  return {
+    matchReportId: opts.matchReportId,
+    date: opts.date,
+    homeTeam: opts.homeTeam,
+    awayTeam: opts.awayTeam,
+    teamFiksId: opts.teamFiksId,
+    teamName: opts.teamName,
+    division: opts.division,
+    isHigher: opts.isHigher,
+    clubSide: opts.clubSide,
+    squad: {
+      ready: true,
+      home: opts.clubSide === 'home' ? opts.squadPlayers : [],
+      away: opts.clubSide === 'away' ? opts.squadPlayers : [],
+    },
+  };
+}
+
+/** Default: G16-1 sibling appearance with SHARED_IN_OTHER player (higher level than G16-2) */
+const DEFAULT_G161_APPEARANCE = nesoddenAppearance({
+  teamFiksId: G16_1,
+  teamName: 'Nesodden G16-1',
+  division: 'G16 2. divisjon',
+  isHigher: true,
+  matchReportId: SQUAD_OTHER,
+  date: '11.04.2026',
+  homeTeam: 'Nesodden',
+  awayTeam: 'Grüner',
+  clubSide: 'home',
+  squadPlayers: [SHARED_IN_OTHER],
+});
+
+/** G16-3 sibling appearance with SHARED_IN_OTHER player (lower level than G16-1) */
+const G163_APPEARANCE_FROM_G161 = nesoddenAppearance({
+  teamFiksId: G16_3,
+  teamName: 'Nesodden G16-3',
+  division: 'G16 4. divisjon avd 02',
+  isHigher: false,
+  matchReportId: SQUAD_OTHER,
+  date: '11.04.2026',
+  homeTeam: 'Nesodden 3',
+  awayTeam: 'Haugerud 2',
+  clubSide: 'home',
+  squadPlayers: [SHARED_IN_OTHER],
+});
+
 // ── Route helpers ─────────────────────────────────────────────────────────────
 
 interface RouteOpts {
@@ -92,7 +156,7 @@ interface RouteOpts {
   g162Matches?: unknown[];
   g163Matches?: unknown[];
   currentSquad?: unknown;
-  otherSquad?: unknown;
+  nesoddenClubSquads?: unknown[];
 }
 
 async function mockRoutes(page: Page, opts: RouteOpts = {}) {
@@ -101,7 +165,7 @@ async function mockRoutes(page: Page, opts: RouteOpts = {}) {
     g162Matches = [G162_UPCOMING],
     g163Matches = [],
     currentSquad = { ready: true, home: [SHARED, UNIQUE], away: [OPPONENT] },
-    otherSquad   = { ready: true, home: [SHARED_IN_OTHER], away: [] },
+    nesoddenClubSquads = [DEFAULT_G161_APPEARANCE],
   } = opts;
 
   await page.route(`**/api/teams/${G16_1}/matches`, (r) =>
@@ -116,8 +180,13 @@ async function mockRoutes(page: Page, opts: RouteOpts = {}) {
   await page.route(`**/api/squads/${SQUAD_CURRENT}`, (r) =>
     r.fulfill({ json: currentSquad })
   );
-  await page.route(`**/api/squads/${SQUAD_OTHER}`, (r) =>
-    r.fulfill({ json: otherSquad })
+  // Opponent side registered first (lower Playwright LIFO priority)
+  await page.route('**/api/clubs/*/squads*', (r) =>
+    r.fulfill({ json: [] })
+  );
+  // Nesodden club squads registered last (higher Playwright LIFO priority — overrides the wildcard above)
+  await page.route('**/api/clubs/82/squads*', (r) =>
+    r.fulfill({ json: nesoddenClubSquads })
   );
   // Silence sync status check (not relevant to cross-team tests)
   await page.route('**/api/sync', (r) =>
@@ -127,19 +196,18 @@ async function mockRoutes(page: Page, opts: RouteOpts = {}) {
 
 // ── Navigation helpers ────────────────────────────────────────────────────────
 
-/** Navigate to G16-2 tab, open the mock match card, wait for squad to appear */
+/** Navigate directly to G16-2 tab, open the mock match card, wait for squad to appear */
 async function openG162Card(page: Page) {
-  await page.goto(APP);
-  await page.getByRole('button', { name: /Nesodden G16-2/i }).first().click();
+  await page.goto(`${APP}/?ageGroup=G16&team=${G16_2}`);
   await expect(page.getByText('CrossTestMotstander')).toBeVisible({ timeout: 8000 });
   await page.locator('button').filter({ hasText: 'CrossTestMotstander' }).first().click();
   // Squad loaded when a known player name is visible
   await expect(page.getByText('Unik, Spiller')).toBeVisible({ timeout: 8000 });
 }
 
-/** Stay on G16-1 tab (default), open the mock match card, wait for squad */
+/** Navigate directly to G16-1 tab, open the mock match card, wait for squad */
 async function openG161Card(page: Page) {
-  await page.goto(APP);
+  await page.goto(`${APP}/?ageGroup=G16&team=${G16_1}`);
   await expect(page.getByText('CrossTestHøyereMotstander')).toBeVisible({ timeout: 8000 });
   await page.locator('button').filter({ hasText: 'CrossTestHøyereMotstander' }).first().click();
   await expect(page.getByText('Unik, Spiller')).toBeVisible({ timeout: 8000 });
@@ -154,8 +222,8 @@ test.describe('CrossTeamPlayers — spillerdeling mellom lag', () => {
     await openG162Card(page);
 
     // Wait for cross-team check to complete
-    const section = page.getByText('Spillerdeling mellom lag');
-    await expect(section).toBeVisible({ timeout: 10000 });
+    const section = page.getByText('Spillerdeling');
+    await expect(section.first()).toBeVisible({ timeout: 10000 });
 
     // Correct player is listed
     await expect(page.getByText('#7 Felles, Spiller')).toBeVisible();
@@ -171,18 +239,15 @@ test.describe('CrossTeamPlayers — spillerdeling mellom lag', () => {
     await mockRoutes(page, {
       // G16-1 is the active team: upcoming match is the one being viewed
       g161Matches: [G161_UPCOMING],
-      // G16-3 has one played match; its Nesodden players include SHARED
       g163Matches: [G163_PLAYED],
-      // Current squad: G16-1's upcoming match squad (Nesodden home → squad.home)
       currentSquad: { ready: true, home: [SHARED, UNIQUE], away: [OPPONENT] },
-      // Other squad: G16-3's last played match (Nesodden home → squad.home)
-      otherSquad:   { ready: true, home: [SHARED_IN_OTHER], away: [] },
+      nesoddenClubSquads: [G163_APPEARANCE_FROM_G161],
     });
 
     await openG161Card(page);
 
-    const section = page.getByText('Spillerdeling mellom lag');
-    await expect(section).toBeVisible({ timeout: 10000 });
+    const section = page.getByText('Spillerdeling');
+    await expect(section.first()).toBeVisible({ timeout: 10000 });
 
     await expect(page.getByText('#7 Felles, Spiller')).toBeVisible();
 
@@ -192,41 +257,52 @@ test.describe('CrossTeamPlayers — spillerdeling mellom lag', () => {
 
   test('skjuler seksjonen når ingen spillere er delt mellom lagene', async ({ page }) => {
     await mockRoutes(page, {
-      // G16-1's squad has completely different players from G16-2's current squad
-      otherSquad: {
-        ready: true,
-        home: [{ name: 'Annen, Spiller', jerseyNumber: 1, position: 'Keeper' }],
-        away: [],
-      },
+      // Sibling team has completely different players
+      nesoddenClubSquads: [nesoddenAppearance({
+        teamFiksId: G16_1,
+        teamName: 'Nesodden G16-1',
+        division: 'G16 2. divisjon',
+        isHigher: true,
+        matchReportId: SQUAD_OTHER,
+        date: '11.04.2026',
+        homeTeam: 'Nesodden',
+        awayTeam: 'Grüner',
+        clubSide: 'home',
+        squadPlayers: [{ name: 'Annen, Spiller', jerseyNumber: 1, position: 'Keeper' }],
+      })],
     });
     await openG162Card(page);
 
     // Give CrossTeamPlayers time to complete its checks
     await page.waitForTimeout(2000);
-    await expect(page.getByText('Spillerdeling mellom lag')).not.toBeVisible();
+    // "Ingen spillerdeling funnet" is shown but the section should not show shared players
+    await expect(page.getByText('#7 Felles, Spiller')).not.toBeVisible();
   });
 
   test('skjuler seksjonen når søsterlagene ikke har spilt noen kamper enda', async ({ page }) => {
     await mockRoutes(page, {
-      // Neither G16-1 nor G16-3 have any played matches (no result field)
       g161Matches: [{ ...G161_UPCOMING, matchReportId: undefined }],
       g163Matches: [],
+      // No sibling appearances
+      nesoddenClubSquads: [],
     });
     await openG162Card(page);
 
     await page.waitForTimeout(2000);
-    await expect(page.getByText('Spillerdeling mellom lag')).not.toBeVisible();
+    await expect(page.getByText('#7 Felles, Spiller')).not.toBeVisible();
   });
 
   test('skjuler seksjonen når søsterlagets siste kamptropp ikke er registrert (ready: false)', async ({ page }) => {
     await mockRoutes(page, {
-      // G16-1 has a played match but squad is not ready yet
-      otherSquad: { ready: false, home: [], away: [] },
+      nesoddenClubSquads: [{
+        ...DEFAULT_G161_APPEARANCE,
+        squad: { ready: false, home: [], away: [] },
+      }],
     });
     await openG162Card(page);
 
     await page.waitForTimeout(2000);
-    await expect(page.getByText('Spillerdeling mellom lag')).not.toBeVisible();
+    await expect(page.getByText('#7 Felles, Spiller')).not.toBeVisible();
   });
 
   test('viser ikke seksjonen når nåværende kamptroppkort ikke har registrert tropp', async ({ page }) => {
@@ -234,15 +310,14 @@ test.describe('CrossTeamPlayers — spillerdeling mellom lag', () => {
       // Current match's squad is not ready
       currentSquad: { ready: false, home: [], away: [] },
     });
-    await page.goto(APP);
-    await page.getByRole('button', { name: /Nesodden G16-2/i }).first().click();
+    await page.goto(`${APP}/?ageGroup=G16&team=${G16_2}`);
     await expect(page.getByText('CrossTestMotstander')).toBeVisible({ timeout: 8000 });
     await page.locator('button').filter({ hasText: 'CrossTestMotstander' }).first().click();
 
     // Squad not ready → shows placeholder message, not player list
     await expect(page.getByText('Kamptropp ikke klar enda')).toBeVisible({ timeout: 8000 });
     // CrossTeamPlayers must never appear in this state
-    await expect(page.getByText('Spillerdeling mellom lag')).not.toBeVisible();
+    await expect(page.getByText('#7 Felles, Spiller')).not.toBeVisible();
   });
 
   test('håndterer Nesodden som bortelag korrekt — finner spillere i squad.away', async ({ page }) => {
@@ -257,19 +332,38 @@ test.describe('CrossTeamPlayers — spillerdeling mellom lag', () => {
       g162Matches: [awayMatch],
       // Since Nesodden is away → squad.away contains Nesodden players
       currentSquad: { ready: true, home: [OPPONENT], away: [SHARED, UNIQUE] },
-      // G16-1's last match: Nesodden home → squad.home
-      otherSquad:   { ready: true, home: [SHARED_IN_OTHER], away: [] },
+      nesoddenClubSquads: [DEFAULT_G161_APPEARANCE],
     });
 
-    await page.goto(APP);
-    await page.getByRole('button', { name: /Nesodden G16-2/i }).first().click();
-    await expect(page.getByText('CrossTestMotstander')).toBeVisible({ timeout: 8000 });
-    await page.locator('button').filter({ hasText: 'CrossTestMotstander' }).first().click();
-    await expect(page.getByText('Unik, Spiller')).toBeVisible({ timeout: 8000 });
+    await openG162Card(page);
 
-    const section = page.getByText('Spillerdeling mellom lag');
-    await expect(section).toBeVisible({ timeout: 10000 });
+    const section = page.getByText('Spillerdeling');
+    await expect(section.first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('#7 Felles, Spiller')).toBeVisible();
+  });
+
+  test('viser kun spillere fra siste kamp per søsterlag, ikke fra eldre kamper', async ({ page }) => {
+    // A player who appeared in an older sibling match but NOT the latest
+    // should NOT be listed — only the most recent prior match matters.
+    const OLD_PLAYER = { name: 'Gammel, Spiller', jerseyNumber: 3, position: 'Forsvar' };
+
+    await mockRoutes(page, {
+      // OLD_PLAYER is in the current squad but NOT in the latest G16-1 match
+      currentSquad: { ready: true, home: [SHARED, UNIQUE, OLD_PLAYER], away: [OPPONENT] },
+      // API returns only the latest G16-1 match (which has SHARED_IN_OTHER, not OLD_PLAYER)
+      nesoddenClubSquads: [DEFAULT_G161_APPEARANCE],
+    });
+    await openG162Card(page);
+
+    const section = page.getByText('Spillerdeling');
+    await expect(section.first()).toBeVisible({ timeout: 10000 });
+
+    // SHARED player from the latest G16-1 match IS shown
+    await expect(page.getByText('#7 Felles, Spiller')).toBeVisible();
+
+    // OLD_PLAYER appears in the player list (current squad), but must NOT appear
+    // in the spillerdeling section (which uses the "#jersey name" format)
+    await expect(page.getByText('#3 Gammel, Spiller')).not.toBeVisible();
   });
 
 });

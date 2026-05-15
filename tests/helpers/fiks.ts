@@ -4,8 +4,8 @@ const FIKS_BASE = 'https://fiks.fotball.no';
 
 export const TEAMS = [
   { name: 'G16-1', fiksId: '134742' },
-  { name: 'G16-2', fiksId: '6895'   },
-  { name: 'G16-3', fiksId: '154500' },
+  { name: 'G16-2', fiksId: '154500' },
+  { name: 'G16-3', fiksId: '6895'   },
 ] as const;
 
 export function fiksTeamUrl(teamId: string) {

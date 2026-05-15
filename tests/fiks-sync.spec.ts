@@ -32,7 +32,6 @@
  */
 import { test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { G16_TEAMS } from '../lib/mockData';
 import {
   readTeamData, writeTeamData,
   readSquads, writeSquads,
@@ -626,14 +625,14 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
 
   // Determine which teams to sync:
   //   SYNC_TEAMS env var (JSON array of Team) → partial sync from the UI
-  //   fallback → G16_TEAMS (full default sync)
-  let teamsToSync: Team[] = G16_TEAMS;
+  //   fallback → all teams from club.json (populated after discovery below)
+  let teamsToSync: Team[] | null = null;
   if (process.env.SYNC_TEAMS) {
     try {
       teamsToSync = JSON.parse(process.env.SYNC_TEAMS) as Team[];
       console.log(`\n[sync] Partial sync requested for: ${teamsToSync.map(t => t.name).join(', ')}`);
     } catch {
-      console.warn('[sync] Could not parse SYNC_TEAMS — falling back to G16_TEAMS');
+      console.warn('[sync] Could not parse SYNC_TEAMS — will discover teams from FIKS');
     }
   }
 
@@ -650,19 +649,18 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
   // ── 0. Discover all Nesodden teams by age group (needed for file layout) ────
   // Seed from existing club.json so that a failed discovery doesn't wipe known teams
   const existingClub = readClubData();
-  const clubTeams: Record<string, typeof G16_TEAMS> = { ...(existingClub?.clubTeams ?? {}) };
+  const clubTeams: Record<string, Team[]> = { ...(existingClub?.clubTeams ?? {}) };
 
   console.log('\n[sync] ── Discovering Nesodden teams by age group ──');
   const rawTeamsByAgeGroup = await scrapeClubTeamsByAgeGroup(page, NESODDEN_CLUB_ID);
   for (const [ageGroup, teamList] of Object.entries(rawTeamsByAgeGroup)) {
     clubTeams[ageGroup] = teamList.map(({ fiksId, name }) => {
-      const known = G16_TEAMS.find((t) => t.fiksId === fiksId);
-      // Preserve existing fields (division, tournamentFiksId) if not discovered
+      // Preserve existing fields (division, tournamentFiksId) from prior syncs
       const existing = (existingClub?.clubTeams?.[ageGroup] ?? []).find(t => t.fiksId === fiksId);
       return {
         fiksId,
         name,
-        division:   known?.division ?? existing?.division ?? '',
+        division:   existing?.division ?? '',
         clubFiksId: NESODDEN_CLUB_ID,
         logoUrl:    `https://images.fotball.no/clublogos/${NESODDEN_CLUB_ID}.png`,
         ...(existing?.tournamentFiksId ? { tournamentFiksId: existing.tournamentFiksId } : {}),
@@ -686,20 +684,23 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     console.log(`  → after fallback: ${Object.keys(clubTeams).sort().join(', ')}`);
   }
 
-  // Update teamsToSync with live names from FIKS (handles team renames)
-  const allDiscoveredTeams = Object.values(clubTeams).flat();
-  teamsToSync = teamsToSync.map((t) => {
-    const live = allDiscoveredTeams.find((d) => d.fiksId === t.fiksId);
-    return live ?? t;
-  });
-
   // Build fiksId → ageGroup lookup
   const ageGroupOf: Record<string, string> = {};
   for (const [ag, teams] of Object.entries(clubTeams)) {
     for (const t of teams) ageGroupOf[t.fiksId] = ag;
   }
-  // Fallback for SYNC_TEAMS teams not yet in clubTeams (e.g. first sync)
-  for (const t of G16_TEAMS) ageGroupOf[t.fiksId] ??= 'G16';
+
+  // Resolve teamsToSync: update with live names, or default to all discovered teams
+  const allDiscoveredTeams = Object.values(clubTeams).flat();
+  if (teamsToSync) {
+    teamsToSync = teamsToSync.map((t) => {
+      const live = allDiscoveredTeams.find((d) => d.fiksId === t.fiksId);
+      return live ?? t;
+    });
+  } else {
+    teamsToSync = allDiscoveredTeams;
+    console.log(`\n[sync] Full sync: ${teamsToSync.map(t => `${t.name} (${ageGroupOf[t.fiksId]})`).join(', ')}`);
+  }
 
   // Collect all Nesodden team matches for logo pass (includes non-synced teams from disk)
   const allNesoddenMatches: Record<string, Match[]> = {};
@@ -950,9 +951,10 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       return null; // already cached — no new club IDs to return
     }
 
-    // Already visited (has events key, even empty) but not ready (no squad registered).
-    // Past match data doesn't change on FIKS — skip re-scraping.
-    if (existingSquad && 'events' in existingSquad) {
+    // Already visited with event data found — no need to re-scrape.
+    // But if events is empty and squad is not ready, re-scrape because FIKS
+    // match events may have been added since last sync (common in youth football).
+    if (existingSquad && !isIncomplete && existingSquad.events && existingSquad.events.length > 0) {
       return null;
     }
 
@@ -1061,7 +1063,7 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
       fiksId: teamFiksId,
       name: meta.name,
       clubId: resolvedClubId,
-      division: '',
+      division: standingsData[meta.tournamentFiksId]?.tournament ?? '',
       ageGroup: meta.ageGroup,
       tournamentFiksId: meta.tournamentFiksId,
     };

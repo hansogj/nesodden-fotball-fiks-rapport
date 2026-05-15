@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { readAllTeamMatches, readSquads, readOpponents } from '@/lib/fiksSync';
-import { G16_TEAMS } from '@/lib/mockData';
+import { readAllTeamMatches, readSquads, readOpponents, readClubData } from '@/lib/fiksSync';
+import { NESODDEN_CLUB_ID } from '@/lib/mockData';
 import type { ClubAppearance } from '@/lib/types';
 
 function dateMs(date: string): number {
@@ -9,7 +9,7 @@ function dateMs(date: string): number {
 }
 
 function divisionRank(division: string): number {
-  const m = division.match(/(\d+)\.\s*divisjon/i);
+  const m = division.match(/(\d+)\.\s*div(?:isjon|\.)/i);
   return m ? parseInt(m[1]) : 99;
 }
 
@@ -41,27 +41,47 @@ export async function GET(
     return NextResponse.json([]);
   }
 
-  const appearances: ClubAppearance[] = [];
-
-  // ── Determine the current match's opponent team division (for isHigher) ──────
-  let currentTeamDivision = '';
-  if (exclude && Object.keys(opponentTeams).length > 0) {
-    outer: for (const [teamFiksId, teamMatchList] of Object.entries(opponentMatches)) {
-      for (const m of teamMatchList) {
-        if (m.matchReportId === exclude) {
-          currentTeamDivision = opponentTeams[teamFiksId]?.division ?? '';
-          break outer;
-        }
-      }
+  // ── Build age-group map for Nesodden teams ─────────────────────────────────
+  const clubData = readClubData();
+  const nesoddenAgeGroupMap: Record<string, string> = {};
+  if (clubData?.clubTeams) {
+    for (const [ag, teams] of Object.entries(clubData.clubTeams)) {
+      for (const t of teams) nesoddenAgeGroupMap[t.fiksId] = ag;
     }
   }
-  // Fallback: check Nesodden matches
-  if (!currentTeamDivision && exclude) {
-    for (const [nesoddenFiksId, teamMatchList] of Object.entries(allMatches)) {
-      for (const m of teamMatchList) {
-        if (m.matchReportId === exclude) {
-          const nesoddenTeam = G16_TEAMS.find(t => t.fiksId === nesoddenFiksId);
-          void nesoddenTeam;
+
+  // ── Identify the team that played in the excluded match ────────────────────
+  // This team's other appearances are filtered out so only sibling teams remain.
+  let excludeTeamFiksId = '';
+  let excludeAgeGroup = '';
+  let currentTeamDivision = '';
+  let excludeMatchDate = '';
+
+  if (exclude) {
+    if (clubId === NESODDEN_CLUB_ID) {
+      // For Nesodden queries, find the Nesodden team that played in the excluded match
+      for (const [nesoddenFiksId, teamMatchList] of Object.entries(allMatches)) {
+        const match = teamMatchList.find(m => m.matchReportId === exclude);
+        if (match) {
+          excludeTeamFiksId = nesoddenFiksId;
+          excludeAgeGroup = nesoddenAgeGroupMap[nesoddenFiksId] ?? '';
+          excludeMatchDate = match.date;
+          const clubTeam = clubData?.clubTeams?.[excludeAgeGroup]?.find(t => t.fiksId === nesoddenFiksId);
+          currentTeamDivision = clubTeam?.division ?? '';
+          break;
+        }
+      }
+    } else {
+      // For opponent queries, find the opponent team from the queried club
+      for (const [teamFiksId, teamMatchList] of Object.entries(opponentMatches)) {
+        const opponentTeam = opponentTeams[teamFiksId];
+        if (!opponentTeam || opponentTeam.clubId !== clubId) continue;
+        const match = teamMatchList.find(m => m.matchReportId === exclude);
+        if (match) {
+          excludeTeamFiksId = teamFiksId;
+          excludeAgeGroup = opponentTeam.ageGroup ?? '';
+          currentTeamDivision = opponentTeam.division ?? '';
+          excludeMatchDate = match.date;
           break;
         }
       }
@@ -69,10 +89,18 @@ export async function GET(
   }
 
   const currentRank = divisionRank(currentTeamDivision);
+  const appearances: ClubAppearance[] = [];
 
-  // ── Search Nesodden matches ────────────────────────────────────────────────
+  // ── Search Nesodden matches (only for Nesodden club queries) ──────────────
   for (const [nesoddenTeamFiksId, teamMatchList] of Object.entries(allMatches)) {
-    const nesoddenTeam = G16_TEAMS.find(t => t.fiksId === nesoddenTeamFiksId);
+    if (clubId !== NESODDEN_CLUB_ID) break;
+    // Skip same team and wrong age group
+    if (nesoddenTeamFiksId === excludeTeamFiksId) continue;
+    if (excludeAgeGroup && nesoddenAgeGroupMap[nesoddenTeamFiksId] !== excludeAgeGroup) continue;
+
+    const clubTeam = clubData?.clubTeams?.[nesoddenAgeGroupMap[nesoddenTeamFiksId] ?? '']?.find(
+      t => t.fiksId === nesoddenTeamFiksId
+    );
 
     for (const match of teamMatchList) {
       if (!match.matchReportId || match.matchReportId === exclude) continue;
@@ -87,8 +115,8 @@ export async function GET(
       const squad = squads[match.matchReportId];
       if (!squad) continue;
 
-      const teamName = nesoddenTeam?.name ?? `Nesodden ${nesoddenTeamFiksId}`;
-      const division = nesoddenTeam?.division ?? '';
+      const teamName = clubTeam?.name ?? `Nesodden ${nesoddenTeamFiksId}`;
+      const division = clubTeam?.division ?? '';
       const siblingRank = divisionRank(division);
 
       appearances.push({
@@ -107,52 +135,55 @@ export async function GET(
   }
 
   // ── Search opponent team matches ───────────────────────────────────────────
-  if (Object.keys(opponentMatches).length > 0) {
-    for (const [teamFiksId, teamMatchList] of Object.entries(opponentMatches)) {
-      const opponentTeam = opponentTeams[teamFiksId];
-      if (!opponentTeam || opponentTeam.clubId !== clubId) continue;
+  for (const [teamFiksId, teamMatchList] of Object.entries(opponentMatches)) {
+    const opponentTeam = opponentTeams[teamFiksId];
+    if (!opponentTeam || opponentTeam.clubId !== clubId) continue;
+    // Skip same team and wrong age group
+    if (teamFiksId === excludeTeamFiksId) continue;
+    if (excludeAgeGroup && opponentTeam.ageGroup !== excludeAgeGroup) continue;
 
-      for (const match of teamMatchList) {
-        if (!match.matchReportId || match.matchReportId === exclude) continue;
+    for (const match of teamMatchList) {
+      if (!match.matchReportId || match.matchReportId === exclude) continue;
 
-        const clubSide: 'home' | 'away' | null =
-          match.homeClubId === clubId ? 'home' :
-          match.awayClubId === clubId ? 'away' :
-          null;
+      const clubSide: 'home' | 'away' | null =
+        match.homeClubId === clubId ? 'home' :
+        match.awayClubId === clubId ? 'away' :
+        null;
 
-        if (!clubSide) continue;
+      if (!clubSide) continue;
 
-        const squad = squads[match.matchReportId];
-        if (!squad) continue;
+      const squad = squads[match.matchReportId];
+      if (!squad) continue;
 
-        const siblingRank = divisionRank(opponentTeam.division);
+      const siblingRank = divisionRank(opponentTeam.division);
 
-        appearances.push({
-          matchReportId: match.matchReportId,
-          date: match.date,
-          homeTeam: match.homeTeam,
-          awayTeam: match.awayTeam,
-          teamFiksId,
-          teamName: opponentTeam.name,
-          division: opponentTeam.division,
-          isHigher: currentRank !== 99 ? siblingRank < currentRank : false,
-          clubSide,
-          squad,
-        });
-      }
+      appearances.push({
+        matchReportId: match.matchReportId,
+        date: match.date,
+        homeTeam: match.homeTeam,
+        awayTeam: match.awayTeam,
+        teamFiksId,
+        teamName: opponentTeam.name,
+        division: opponentTeam.division,
+        isHigher: currentRank !== 99 ? siblingRank < currentRank : false,
+        clubSide,
+        squad,
+      });
     }
   }
 
-  // Most recent first; deduplicate by matchReportId
-  const seen = new Set<string>();
-  const deduped = appearances
-    .sort((a, b) => dateMs(b.date) - dateMs(a.date))
-    .filter(a => {
-      const key = `${a.teamFiksId}:${a.matchReportId}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  // Only matches on or before the current match date (prior games)
+  const cutoff = excludeMatchDate ? dateMs(excludeMatchDate) : Infinity;
+  const prior = appearances.filter(a => dateMs(a.date) <= cutoff);
 
-  return NextResponse.json(deduped);
+  // Most recent first; keep only the latest match with a ready squad per sibling team
+  prior.sort((a, b) => dateMs(b.date) - dateMs(a.date));
+  const perTeam = new Map<string, ClubAppearance>();
+  for (const a of prior) {
+    if (!perTeam.has(a.teamFiksId) && a.squad.ready) {
+      perTeam.set(a.teamFiksId, a);
+    }
+  }
+
+  return NextResponse.json(Array.from(perTeam.values()));
 }

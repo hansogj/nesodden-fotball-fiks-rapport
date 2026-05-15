@@ -1,5 +1,5 @@
 import { findAgeGroup, readTeamData, readSquads, readClubData, readStandings, writeStandings, readOpponents } from './fiksSync';
-import { scrapeTournamentStandings } from './scraper';
+import { scrapeTournamentStandings, scrapeMatchEvents } from './scraper';
 import type {
   Match,
   Squad,
@@ -162,29 +162,70 @@ async function refreshStandingsIfStale(
 }
 
 /**
- * Collect all tournament matches from Nesodden data + opponents in the same age group.
+ * Collect all tournament matches from Nesodden data + opponents in the same division.
  *
- * Opponent teams discovered via the sync's club-based pass all have an `ageGroup` field.
- * By matching on age group we avoid the ID-space mismatch between fotball.no (standings)
- * and FIKS internal team IDs (opponents.json). computeTopScorers deduplicates by
- * matchReportId so matches shared between two opponents' lists are counted once.
+ * Uses standings team IDs to restrict opponent matches to teams in the same division.
+ * This prevents goals from other divisions (e.g. G16-1's 2. div) leaking into
+ * a different division's top scorer list (e.g. G16-3's 4. div).
+ * computeTopScorers deduplicates by matchReportId so matches shared between
+ * two opponents' lists are counted once.
  */
 function collectTournamentMatches(
-  ageGroup: string,
+  standingsTeamIds: Set<string>,
   nesoddenMatches: Match[],
 ): Match[] {
+  if (standingsTeamIds.size === 0) return nesoddenMatches;
+
   const opponents = readOpponents();
   if (!opponents?.matches) return nesoddenMatches;
 
   const all: Match[] = [...nesoddenMatches];
 
   for (const [teamFiksId, matches] of Object.entries(opponents.matches)) {
-    const opTeam = opponents.teams[teamFiksId];
-    if (!opTeam || opTeam.ageGroup !== ageGroup) continue;
+    if (!standingsTeamIds.has(teamFiksId)) continue;
     all.push(...matches);
   }
 
   return all;
+}
+
+/**
+ * Find played matches with missing events and backfill from fotball.no.
+ * Scrapes in batches of 6 (public Cheerio, ~200ms each).
+ * Populates the squads map in-place so computeTopScorers/computeCards see the data.
+ */
+async function backfillMissingEvents(
+  matches: Match[],
+  squads: Record<string, Squad>,
+): Promise<void> {
+  const seen = new Set<string>();
+  const missing: string[] = [];
+
+  for (const m of matches) {
+    if (!m.result || !m.matchReportId || seen.has(m.matchReportId)) continue;
+    seen.add(m.matchReportId);
+
+    const squad = squads[m.matchReportId];
+    if (squad?.events && squad.events.length > 0) continue;
+    missing.push(m.matchReportId);
+  }
+
+  if (missing.length === 0) return;
+
+  const BATCH = 6;
+  for (let i = 0; i < missing.length; i += BATCH) {
+    const batch = missing.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map((id) => scrapeMatchEvents(id)));
+    for (let j = 0; j < batch.length; j++) {
+      const events = results[j];
+      if (events.length === 0) continue;
+      if (!squads[batch[j]]) {
+        squads[batch[j]] = { ready: false, home: [], away: [], events };
+      } else {
+        squads[batch[j]].events = events;
+      }
+    }
+  }
 }
 
 export async function computeTeamStats(fiksId: string): Promise<TeamStatsResponse | null> {
@@ -216,9 +257,14 @@ export async function computeTeamStats(fiksId: string): Promise<TeamStatsRespons
     }
   }
 
-  // Gather ALL tournament matches for league-wide top scorers.
-  // Uses age group to match opponent teams (avoids fotball.no vs FIKS ID mismatch).
-  const allTournamentMatches = collectTournamentMatches(ageGroup, teamMatches);
+  // Gather tournament matches for league-wide top scorers.
+  // Only include opponent teams that appear in the standings (same division).
+  const standingsTeamIds = new Set(standings.map((s) => s.teamFiksId));
+  const allTournamentMatches = collectTournamentMatches(standingsTeamIds, teamMatches);
+
+  // Backfill events from fotball.no for matches missing event data.
+  // This covers opponent matches not yet synced via FIKS Playwright scrape.
+  await backfillMissingEvents(allTournamentMatches, squads);
 
   return {
     standings,

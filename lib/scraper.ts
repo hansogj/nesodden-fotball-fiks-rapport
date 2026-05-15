@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { load } from 'cheerio';
-import type { StandingsEntry, Team } from './types';
+import type { MatchEvent, StandingsEntry, Team } from './types';
 
 export interface PublicMatchInfo {
   matchReportId: string;
@@ -265,6 +265,72 @@ export async function scrapeTeamMatchList(teamFiksId: string): Promise<PublicMat
     });
 
     return matches;
+  } catch {
+    return [];
+  }
+}
+
+// ── Match events from fotball.no (public, Cheerio) ──────────────────────────
+
+/**
+ * Scrape goal/card events from a fotball.no match page.
+ * Public, no auth needed, fast Cheerio parse (~200ms per match).
+ *
+ * HTML structure:
+ *   div.timelineEventLine.homeTeam / .awayTeam
+ *     div.timelineMinute  → "23'"
+ *     a.eventHeading      → player name
+ *     div (after heading)  → "Spillemål" | "Straffemål" | "Selvmål" | "Advarsel"
+ */
+export async function scrapeMatchEvents(matchReportId: string): Promise<MatchEvent[]> {
+  try {
+    const res = await httpClient.get(
+      `${BASE}/kamp/?fiksId=${matchReportId}`,
+      { timeout: 6000 },
+    );
+    const $ = load(res.data as string);
+    const events: MatchEvent[] = [];
+
+    $('.timelineEventLine').each((_, el) => {
+      const $el = $(el);
+      const classes = $el.attr('class') ?? '';
+      const side: 'home' | 'away' = classes.includes('homeTeam') ? 'home' : 'away';
+
+      const minuteText = $el.find('.timelineMinute').text().trim();
+      const minuteMatch = minuteText.match(/(\d+)/);
+      const minute = minuteMatch ? parseInt(minuteMatch[1]) : undefined;
+
+      const playerName = $el.find('.eventHeading').first().text().trim();
+      if (!playerName) return;
+
+      // Event type text is in a div following the .eventHeading link
+      const eventContent = $el.find('.timelineEventContent');
+      const eventTypeText = eventContent.find('div').last().text().trim().toLowerCase();
+
+      let type: 'goal' | 'card';
+      let goalType: MatchEvent['goalType'];
+      let cardType: MatchEvent['cardType'];
+
+      if (eventTypeText.includes('selvmål')) {
+        type = 'goal'; goalType = 'own';
+      } else if (eventTypeText.includes('straffe')) {
+        type = 'goal'; goalType = 'penalty';
+      } else if (eventTypeText.includes('mål') || eventTypeText.includes('spille')) {
+        type = 'goal'; goalType = 'normal';
+      } else if (eventTypeText.includes('rødt') || eventTypeText.includes('utvis')) {
+        type = 'card'; cardType = 'red';
+      } else if (eventTypeText.includes('andre gul') || eventTypeText.includes('2. gul')) {
+        type = 'card'; cardType = 'yellow-red';
+      } else if (eventTypeText.includes('advarsel') || eventTypeText.includes('gult')) {
+        type = 'card'; cardType = 'yellow';
+      } else {
+        return; // unknown event type — skip
+      }
+
+      events.push({ playerName, minute, side, type, goalType, cardType });
+    });
+
+    return events;
   } catch {
     return [];
   }

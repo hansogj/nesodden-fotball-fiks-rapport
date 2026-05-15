@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { readClubData, writeClubData } from '@/lib/fiksSync';
-import { G16_TEAMS, NESODDEN_CLUB_ID } from '@/lib/mockData';
+import { NESODDEN_CLUB_ID } from '@/lib/mockData';
 import { scrapeClubTeams } from '@/lib/scraper';
 
 const MIN_AGE = 12;
@@ -55,11 +55,6 @@ export async function GET(
     const teams = filterTeams(scraped);
     const ageGroups = sortAgeGroups(Object.keys(teams));
     return NextResponse.json({ ageGroups, teams, source: 'scraped' });
-  }
-
-  // 3. Hardcoded G16 fallback for Nesodden
-  if (clubId === NESODDEN_CLUB_ID) {
-    return NextResponse.json({ ageGroups: ['G16'], teams: { G16: G16_TEAMS }, source: 'fallback' });
   }
 
   return NextResponse.json({ ageGroups: [], teams: {}, source: 'empty' });

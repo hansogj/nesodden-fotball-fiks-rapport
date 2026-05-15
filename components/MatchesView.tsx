@@ -269,7 +269,7 @@ export function MatchesView() {
               ) : (
                 <div className="space-y-3 animate-slide-up">
                   {past.map((m) => (
-                    <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} allTeams={teams} />
+                    <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} />
                   ))}
 
                   {past.length > 0 && upcoming.length > 0 && (
@@ -285,7 +285,7 @@ export function MatchesView() {
 
                   {upcoming.map((m) => (
                     <div key={m.matchId} className="opacity-50 hover:opacity-100 transition-opacity">
-                      <MatchCard match={m} nesoddenTeamId={activeId} allTeams={teams} />
+                      <MatchCard match={m} nesoddenTeamId={activeId} />
                     </div>
                   ))}
 

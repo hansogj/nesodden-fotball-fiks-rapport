@@ -167,15 +167,15 @@ test.describe('Cross-team checks', () => {
       );
     }
 
-    // G16-1 and G16-2 should not share all opponents (they're in different divisions)
+    // G16-1 and G16-3 should not share all opponents (they're in different divisions)
     const g1 = teamOpponents['134742'];
-    const g2 = teamOpponents['6895'];
-    const shared = [...g1].filter((o) => g2.has(o)).length;
-    const maxExpectedShared = Math.min(g1.size, g2.size) / 2;
+    const g3 = teamOpponents['6895'];
+    const shared = [...g1].filter((o) => g3.has(o)).length;
+    const maxExpectedShared = Math.min(g1.size, g3.size) / 2;
 
     expect(
       shared,
-      `G16-1 and G16-2 share too many opponents (${shared}), suggesting wrong team IDs`
+      `G16-1 and G16-3 share too many opponents (${shared}), suggesting wrong team IDs`
     ).toBeLessThan(maxExpectedShared);
   });
 });

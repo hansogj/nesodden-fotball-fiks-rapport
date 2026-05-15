@@ -6,8 +6,8 @@ import { test, expect } from '@playwright/test';
 
 const TEAMS = [
   { label: 'Nesodden G16-1', fiksId: '134742' },
-  { label: 'Nesodden G16-2', fiksId: '6895'   },
-  { label: 'Nesodden G16-3', fiksId: '154500' },
+  { label: 'Nesodden G16-2', fiksId: '154500' },
+  { label: 'Nesodden G16-3', fiksId: '6895'   },
 ];
 
 test.describe('App layout', () => {

@@ -17,6 +17,7 @@ npm run sync          # Scrape FIKS → data/teams/{ageGroup}/{fiksId}.json  (re
 npm test              # Playwright UI tests (app-ui project)
 npm run test:accuracy # FIKS auth + data accuracy comparison
 npm run test:kamptropp # Verify squad endpoint returns real FIKS data (not mock)
+npm run test:cross-team # Cross-team player detection (mocked, no FIKS creds needed)
 npm run test:all      # All Playwright projects
 npm run test:ui       # Playwright visual debugger
 npm run knip          # Detect dead code / unused exports
@@ -179,6 +180,9 @@ Shown in `CrossTeamPlayers` when a match card is expanded and squad data is read
 | `sync-fresh` | `fiks-sync.spec.ts` | Same sync worker but skips re-auth (reuses existing `.auth/fiks.json`) |
 | `kamptropp` | `kamptropp.spec.ts` | Verifies real squad data for G16-1 vs Grüner (11.04.2026, matchReportId=8977342) |
 | `cross-team` | `cross-team.spec.ts` | CrossTeamPlayers logic; all API calls mocked — no FIKS credentials needed |
+| `standings-accuracy` | `standings-accuracy.spec.ts` | Verifies app standings match fotball.no for all teams |
+| `match-completeness` | `match-completeness.spec.ts` | Verifies app match lists match FIKS; depends on fiks-setup |
+| `age-groups` | `age-groups.spec.ts` | Verifies every active age group (≥12) has a card on the home page |
 
 All projects run with `workers: 1` (sequential) because FIKS sessions cannot be shared across parallel browser contexts.
 
