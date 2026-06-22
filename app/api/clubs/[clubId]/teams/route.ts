@@ -1,18 +1,9 @@
 import { NextResponse } from 'next/server';
 import { readClubData, writeClubData } from '@/lib/fiksSync';
-import { NESODDEN_CLUB_ID } from '@/lib/mockData';
 import { scrapeClubTeams } from '@/lib/scraper';
+import { sortAgeGroups } from '@/lib/utils';
 
 const MIN_AGE = 12;
-
-function sortAgeGroups(ags: string[]): string[] {
-  return [...ags]
-    .filter((ag) => parseInt(ag.slice(1)) >= MIN_AGE)
-    .sort((a, b) => {
-      if (a[0] !== b[0]) return a[0].localeCompare(b[0]); // G before J
-      return parseInt(a.slice(1)) - parseInt(b.slice(1));  // numeric within gender
-    });
-}
 
 function filterTeams(teams: Record<string, import('@/lib/types').Team[]>): Record<string, import('@/lib/types').Team[]> {
   return Object.fromEntries(

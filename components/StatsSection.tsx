@@ -1,7 +1,6 @@
 'use client';
 import { useState, useEffect, createContext, useContext } from 'react';
 import type {
-  StandingsEntry,
   PlayerGoalStats,
   PlayerCardStats,
   TeamStatsResponse,

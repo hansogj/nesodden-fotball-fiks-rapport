@@ -1,17 +1,8 @@
 import { NextResponse } from 'next/server';
 import { readAllTeamMatches, readSquads, readOpponents, readClubData } from '@/lib/fiksSync';
 import { NESODDEN_CLUB_ID } from '@/lib/mockData';
+import { dateMs, divisionRank } from '@/lib/utils';
 import type { ClubAppearance } from '@/lib/types';
-
-function dateMs(date: string): number {
-  const [d, m, y] = date.split('.').map(Number);
-  return new Date(y, m - 1, d).getTime();
-}
-
-function divisionRank(division: string): number {
-  const m = division.match(/(\d+)\.\s*div(?:isjon|\.)/i);
-  return m ? parseInt(m[1]) : 99;
-}
 
 /**
  * GET /api/clubs/[clubId]/squads?exclude=<matchReportId>
