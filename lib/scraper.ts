@@ -3,7 +3,7 @@ import { load } from 'cheerio';
 import { extractAgeGroup } from './utils';
 import type { MatchEvent, Player, Squad, StandingsEntry, Team } from './types';
 
-export interface PublicMatchInfo {
+interface PublicMatchInfo {
   matchReportId: string;
   date: string;       // dd.mm.yyyy
   time: string;
