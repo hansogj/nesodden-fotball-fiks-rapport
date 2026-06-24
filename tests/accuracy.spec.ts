@@ -118,7 +118,7 @@ for (const team of TEAMS) {
       }
     });
 
-    test(`logo URLs are reachable for all match teams`, async ({ page, request }) => {
+    test(`logo URLs are reachable for all match teams`, async ({ request }) => {
       const resp = await request.get(`${APP_BASE}/api/teams/${team.fiksId}/matches`);
       const { matches } = await resp.json() as {
         matches: Array<{ homeLogoUrl: string; awayLogoUrl: string; homeTeam: string; awayTeam: string }>

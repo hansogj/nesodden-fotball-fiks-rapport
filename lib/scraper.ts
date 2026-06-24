@@ -1,8 +1,9 @@
 import axios from 'axios';
 import { load } from 'cheerio';
-import type { MatchEvent, StandingsEntry, Team } from './types';
+import { extractAgeGroup } from './utils';
+import type { MatchEvent, Player, Squad, StandingsEntry, Team } from './types';
 
-export interface PublicMatchInfo {
+interface PublicMatchInfo {
   matchReportId: string;
   date: string;       // dd.mm.yyyy
   time: string;
@@ -26,12 +27,6 @@ const httpClient = axios.create({
 });
 
 // ── Club team discovery ───────────────────────────────────────────────────────
-
-function extractAgeGroup(label: string): string | null {
-  const m = label.match(/\b([GJ])(\d{2})\b/i);
-  if (!m) return null;
-  return `${m[1].toUpperCase()}${m[2]}`;
-}
 
 /**
  * Scrape all teams for a club from fotball.no, grouped by age group.
@@ -333,5 +328,56 @@ export async function scrapeMatchEvents(matchReportId: string): Promise<MatchEve
     return events;
   } catch {
     return [];
+  }
+}
+
+// ── Match squad from fotball.no (public, Cheerio) ────────────────────────────
+
+/**
+ * Scrape squad/lineup from a fotball.no match page.
+ * Public, no auth needed, fast Cheerio parse.
+ *
+ * HTML structure:
+ *   li.homeTeamWrapper / li.awayTeamWrapper
+ *     h4 "Startoppstilling:" / "Innbyttere:"
+ *     div.matchPlayerListItem
+ *       div.playerNumber → jersey number
+ *       a.playerName     → player name
+ *
+ * No position info is available on fotball.no — all players get position 'Ukjent'.
+ */
+export async function scrapeMatchSquad(matchReportId: string): Promise<Squad> {
+  try {
+    const res = await httpClient.get(
+      `${BASE}/kamp/?fiksId=${matchReportId}`,
+      { timeout: 6000 },
+    );
+    const $ = load(res.data as string);
+
+    function extractPlayers(wrapper: string): Player[] {
+      const players: Player[] = [];
+      $(wrapper).find('.matchPlayerListItem').each((_, el) => {
+        const numberText = $(el).find('.playerNumber').text().trim();
+        const name = $(el).find('.playerName').text().trim();
+        if (!name) return;
+        players.push({
+          name,
+          jerseyNumber: parseInt(numberText) || 0,
+          position: 'Ukjent',
+        });
+      });
+      return players;
+    }
+
+    const home = extractPlayers('.homeTeamWrapper');
+    const away = extractPlayers('.awayTeamWrapper');
+
+    return {
+      ready: home.length > 0 || away.length > 0,
+      home,
+      away,
+    };
+  } catch {
+    return { ready: false, home: [], away: [] };
   }
 }

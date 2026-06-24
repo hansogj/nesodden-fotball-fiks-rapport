@@ -7,5 +7,6 @@ playwright-report/
 .env.local
 data/
 tsconfig.tsbuildinfo
+coverage/
 .claude/settings.local.json
 .claude/agent-memory-local/

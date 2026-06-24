@@ -15,7 +15,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 const APP = 'http://localhost:3210';
 
-// FIKS IDs matching G16_TEAMS in lib/mockData.ts
+// FIKS IDs for Nesodden G16 teams
 const G16_1 = '134742';
 const G16_2 = '154500';
 const G16_3 = '6895';
