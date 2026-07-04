@@ -269,7 +269,7 @@ export function MatchesView() {
               ) : (
                 <div className="space-y-3 animate-slide-up">
                   {past.map((m) => (
-                    <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} />
+                    <MatchCard key={m.matchId} match={m} nesoddenTeamId={activeId} ageGroup={activeAgeGroup} />
                   ))}
 
                   {past.length > 0 && upcoming.length > 0 && (

@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Player, ClubAppearance } from '@/lib/types';
 import { NESODDEN_CLUB_ID } from '@/lib/mockData';
 
@@ -11,12 +11,24 @@ interface SharingHit {
   isHigher: boolean;
 }
 
+/** Normalize player name to lowercase "first last" regardless of source format.
+ *  FIKS uses "Last, First" while fotball.no uses "First Last". */
+function normalizeName(name: string): string {
+  const trimmed = name.toLowerCase().trim();
+  const comma = trimmed.indexOf(', ');
+  if (comma > 0) {
+    return trimmed.slice(comma + 2) + ' ' + trimmed.slice(0, comma);
+  }
+  return trimmed;
+}
+
 interface Props {
   nesoddenPlayers: Player[];
   opponentPlayers?: Player[];
   opponentClubId?: string;
   currentMatchReportId?: string;
   isHomeNesodden: boolean;
+  ageGroup?: string;
 }
 
 /**
@@ -38,10 +50,10 @@ async function checkSharing(
     if (!appearance.squad.ready) continue;
 
     const side = appearance.clubSide === 'home' ? appearance.squad.home : appearance.squad.away;
-    const siblingPlayerNames = new Set(side.map((p: Player) => p.name.toLowerCase().trim()));
+    const siblingPlayerNames = new Set(side.map((p: Player) => normalizeName(p.name)));
 
     const shared = players.filter((p) =>
-      siblingPlayerNames.has(p.name.toLowerCase().trim())
+      siblingPlayerNames.has(normalizeName(p.name))
     );
 
     if (shared.length > 0) {
@@ -63,15 +75,17 @@ export function CrossTeamPlayers({
   opponentClubId,
   currentMatchReportId,
   isHomeNesodden,
+  ageGroup,
 }: Props) {
   const [nesoddenHits, setNesoddenHits] = useState<SharingHit[]>([]);
   const [opponentHits, setOpponentHits] = useState<SharingHit[]>([]);
   const [checked, setChecked] = useState(false);
+  const [discoverVersion, setDiscoverVersion] = useState(0);
 
   const playerKey = nesoddenPlayers.map((p) => p.name).join('|');
   const opponentKey = (opponentPlayers ?? []).map((p) => p.name).join('|');
 
-  useEffect(() => {
+  const runCheck = useCallback(() => {
     const hasNesodden = nesoddenPlayers.length > 0 && !!currentMatchReportId;
     const hasOpponent = (opponentPlayers?.length ?? 0) > 0 && !!opponentClubId && !!currentMatchReportId;
 
@@ -103,15 +117,33 @@ export function CrossTeamPlayers({
     }
 
     Promise.all(tasks).then(() => setChecked(true));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playerKey, opponentKey, opponentClubId, currentMatchReportId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerKey, opponentKey, opponentClubId, currentMatchReportId, discoverVersion]);
+
+  useEffect(() => { runCheck(); }, [runCheck]);
 
   const nesoddenContent = nesoddenPlayers.length > 0 && currentMatchReportId && (
-    <HitsSection hits={nesoddenHits} checked={checked} />
+    <HitsSection
+      hits={nesoddenHits}
+      checked={checked}
+      clubId={NESODDEN_CLUB_ID}
+      ageGroup={ageGroup}
+      players={nesoddenPlayers}
+      matchReportId={currentMatchReportId}
+      onDiscover={() => setDiscoverVersion((v) => v + 1)}
+    />
   );
 
   const opponentContent = (opponentPlayers?.length ?? 0) > 0 && opponentClubId && (
-    <HitsSection hits={opponentHits} checked={checked} />
+    <HitsSection
+      hits={opponentHits}
+      checked={checked}
+      clubId={opponentClubId}
+      ageGroup={ageGroup}
+      players={opponentPlayers!}
+      matchReportId={currentMatchReportId}
+      onDiscover={() => setDiscoverVersion((v) => v + 1)}
+    />
   );
 
   if (!nesoddenContent && !opponentContent) return null;
@@ -124,7 +156,44 @@ export function CrossTeamPlayers({
   );
 }
 
-function HitsSection({ hits, checked }: { hits: SharingHit[]; checked: boolean }) {
+function HitsSection({
+  hits,
+  checked,
+  clubId,
+  ageGroup,
+  players,
+  matchReportId,
+  onDiscover,
+}: {
+  hits: SharingHit[];
+  checked: boolean;
+  clubId: string;
+  ageGroup?: string;
+  players: Player[];
+  matchReportId?: string;
+  onDiscover: () => void;
+}) {
+  const [discovering, setDiscovering] = useState(false);
+  const [discovered, setDiscovered] = useState(false);
+
+  const canDiscover = checked && hits.length === 0 && !!clubId && !!ageGroup && !discovered;
+
+  async function handleDiscover() {
+    setDiscovering(true);
+    try {
+      const res = await fetch(`/api/clubs/${clubId}/discover?ageGroup=${ageGroup}`, { method: 'POST' });
+      const result = await res.json();
+      setDiscovered(true);
+      if (result.newTeams > 0 || result.newSquads > 0) {
+        onDiscover(); // re-trigger sharing check with new data
+      }
+    } catch {
+      // ignore
+    } finally {
+      setDiscovering(false);
+    }
+  }
+
   return (
     <div className="space-y-3">
       <h4 className="text-xs font-semibold uppercase tracking-widest text-amber-400 flex items-center gap-2">
@@ -164,6 +233,18 @@ function HitsSection({ hits, checked }: { hits: SharingHit[]; checked: boolean }
             </div>
           </div>
         ))
+      ) : discovering ? (
+        <p className="text-xs text-dark-muted animate-pulse">Søker etter spillerdeling på fotball.no…</p>
+      ) : canDiscover ? (
+        <div>
+          <p className="text-xs text-dark-muted mb-2">Ingen spillerdeling funnet i synkroniserte data.</p>
+          <button
+            onClick={handleDiscover}
+            className="text-xs px-3 py-1.5 rounded border border-amber-400/30 text-amber-300 hover:bg-amber-400/10 transition-colors"
+          >
+            Sjekk spillerdeling
+          </button>
+        </div>
       ) : (
         <p className="text-xs text-dark-muted">Ingen spillerdeling funnet</p>
       )}
