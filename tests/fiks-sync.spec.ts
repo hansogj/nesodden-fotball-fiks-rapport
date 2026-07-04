@@ -39,7 +39,7 @@ import {
   readOpponents, writeOpponents,
   readStandings, writeStandings,
 } from '../lib/fiksSync';
-import { scrapeTournamentStandings, scrapeClubTeams, scrapeTeamMatchList, scrapeMatchSquad as scrapeMatchSquadPublic, scrapeMatchEvents } from '../lib/scraper';
+import { scrapeTournamentStandings, scrapeClubTeams, scrapeClubAgeGroupTeams, scrapeTeamMatchList, scrapeMatchSquad as scrapeMatchSquadPublic, scrapeMatchEvents } from '../lib/scraper';
 import type { Match, Player, Squad, Team, OpponentTeam, MatchEvent } from '../lib/types';
 
 const FIKS_BASE = 'https://fiks.fotball.no';
@@ -505,7 +505,7 @@ function applyClubIds(
 // ── Main sync test ────────────────────────────────────────────────────────────
 
 test('sync data from fiks.fotball.no', async ({ page }) => {
-  test.setTimeout(10 * 60 * 1000); // 10 minutes (opponent pass adds significant time on first run)
+  test.setTimeout(15 * 60 * 1000); // 15 minutes (opponent + club-teams passes add significant time on first run)
 
   // Determine which teams to sync:
   //   SYNC_TEAMS env var (JSON array of Team) → partial sync from the UI
@@ -961,6 +961,121 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
 
     opponentMatches[teamFiksId] = teamMatches;
     console.log(`    → ${squadCount} squads scraped/cached`);
+  }
+
+  // ── 3b. Club-teams pass: discover interkretslag & non-division teams ───────
+  // For each opponent club, fetch the fotball.no club page and find teams in the
+  // same age group that weren't discovered via tournament standings (e.g. interkretslag,
+  // cup-only teams). These are critical for accurate spillerdeling detection.
+
+  // Collect opponent clubs where we already have ≥1 team in a given age group.
+  // Only those (club, ageGroup) pairs are worth checking for additional sibling teams
+  // (interkretslag, cup-only teams, etc.) — the spillerdeling API filters by age group,
+  // so discovering teams in age groups we don't already track is pointless.
+  const opponentClubAgeGroups = new Map<string, Set<string>>();
+  for (const team of Object.values(opponentTeams)) {
+    if (team.clubId && team.ageGroup) {
+      if (!opponentClubAgeGroups.has(team.clubId)) opponentClubAgeGroups.set(team.clubId, new Set());
+      opponentClubAgeGroups.get(team.clubId)!.add(team.ageGroup);
+    }
+  }
+
+  // Set of opponent team fiksIds already known
+  const knownOpponentTeamIds = new Set(Object.keys(opponentTeams));
+
+  console.log(`\n[sync] ── Club-teams pass: checking ${opponentClubAgeGroups.size} opponent clubs for extra teams ──`);
+
+  for (const [clubId, ageGroups] of opponentClubAgeGroups) {
+    // Fetch the club page once and extract teams for ALL relevant age groups
+    const clubTeamsByAg = await scrapeClubAgeGroupTeams(clubId, [...ageGroups]);
+
+    for (const [ageGroup, clubTeamList] of Object.entries(clubTeamsByAg)) {
+    const newTeams = clubTeamList.filter(t => !knownOpponentTeamIds.has(t.fiksId) && !nesoddenTeamIds.has(t.fiksId));
+
+    if (newTeams.length === 0) continue;
+
+    console.log(`  [club ${clubId}] Found ${newTeams.length} new ${ageGroup} team(s): ${newTeams.map(t => t.name).join(', ')}`);
+
+    // Derive base club name from any discovered team (e.g. "Hasle-Løren G16-1" → "hasle-løren")
+    // so that matches using the short name (e.g. interkrets: "Hasle-Løren") resolve correctly.
+    for (const t of clubTeamList) {
+      const baseName = t.name.replace(/\s+[GJ]\d+(-\d+)?$/i, '').trim().toLowerCase();
+      if (baseName) clubIdByName[baseName] = clubId;
+    }
+
+    for (const team of newTeams) {
+      process.stdout.write(`    [club-team] ${team.name} (${team.fiksId}) … `);
+      const publicMatches = await scrapeTeamMatchList(team.fiksId);
+      console.log(`${publicMatches.length} matches`);
+
+      if (publicMatches.length === 0) continue;
+
+      const teamMatches: Match[] = publicMatches.map(pm => ({
+        matchId:      `fiks-${pm.matchReportId}`,
+        matchReportId: pm.matchReportId,
+        date:         pm.date,
+        time:         pm.time,
+        homeTeam:     pm.homeTeam,
+        homeTeamId:   '',
+        homeClubId:   '',
+        homeLogoUrl:  '',
+        awayTeam:     pm.awayTeam,
+        awayTeamId:   '',
+        awayClubId:   '',
+        awayLogoUrl:  '',
+        venue:        '',
+        tournament:   '',
+        isHome:       false,
+        result:       pm.result,
+      }));
+
+      let squadCount = 0;
+      const localClubIdByName: Record<string, string> = { ...clubIdByName };
+
+      // Only scrape squads for the 5 most recent played matches — enough for spillerdeling
+      const playedMatches = teamMatches.filter(m => m.matchReportId && m.result);
+      playedMatches.sort((a, b) => {
+        const [dA,mA,yA] = a.date.split('.').map(Number);
+        const [dB,mB,yB] = b.date.split('.').map(Number);
+        return new Date(yB,mB-1,dB).getTime() - new Date(yA,mA-1,dA).getTime();
+      });
+      const recentPlayed = playedMatches.slice(0, 5);
+
+      for (const match of recentPlayed) {
+        const clubIds = await scrapeMatchSquad(
+          match.matchReportId!, match.homeTeam, match.awayTeam, match.date, 'club-squad',
+        );
+        if (clubIds === null) {
+          squadCount++;
+          continue;
+        }
+        if (clubIds.homeClubId) {
+          match.homeLogoUrl = `https://images.fotball.no/clublogos/${clubIds.homeClubId}.png`;
+          localClubIdByName[match.homeTeam.toLowerCase()] = clubIds.homeClubId;
+        }
+        if (clubIds.awayClubId) {
+          match.awayLogoUrl = `https://images.fotball.no/clublogos/${clubIds.awayClubId}.png`;
+          localClubIdByName[match.awayTeam.toLowerCase()] = clubIds.awayClubId;
+        }
+        if (squads[match.matchReportId!]?.ready) squadCount++;
+      }
+
+      applyClubIds([teamMatches], localClubIdByName, team.fiksId, clubId);
+      Object.assign(clubIdByName, localClubIdByName);
+
+      opponentTeams[team.fiksId] = {
+        fiksId: team.fiksId,
+        name: team.name,
+        clubId,
+        division: '', // non-division team (interkrets, cup, etc.)
+        ageGroup,
+      };
+
+      opponentMatches[team.fiksId] = teamMatches;
+      knownOpponentTeamIds.add(team.fiksId);
+      console.log(`      → ${squadCount} squads scraped/cached`);
+    }
+    } // end ageGroup loop
   }
 
   // ── 4. Write shared data ────────────────────────────────────────────────────

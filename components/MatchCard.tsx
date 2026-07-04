@@ -18,9 +18,9 @@ function isPastMatch(date: string, time: string): boolean {
   }
 }
 
-interface Props { match: Match; nesoddenTeamId: string }
+interface Props { match: Match; nesoddenTeamId: string; ageGroup?: string }
 
-export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId }: Props) {
+export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId, ageGroup }: Props) {
   const [open, setOpen] = useState(false);
   const [nesoddenPlayers, setNesoddenPlayers] = useState<Player[] | null>(null);
   const [opponentPlayers, setOpponentPlayers] = useState<Player[] | null>(null);
@@ -98,6 +98,19 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId }: Prop
                   className="text-dark-muted hover:text-white transition-colors flex items-center gap-1"
                 >
                   FIKS
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </a>
+                <span>·</span>
+                <a
+                  href={`https://www.fotball.no/fotballdata/kamp/?fiksId=${match.matchReportId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-dark-muted hover:text-white transition-colors flex items-center gap-1"
+                >
+                  fotball.no
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                   </svg>
@@ -194,6 +207,7 @@ export const MatchCard = memo(function MatchCard({ match, nesoddenTeamId }: Prop
                   opponentClubId={isHomeNesodden ? match.awayClubId : match.homeClubId}
                   currentMatchReportId={match.matchReportId}
                   isHomeNesodden={isHomeNesodden}
+                  ageGroup={ageGroup}
                 />
               )}
             </>

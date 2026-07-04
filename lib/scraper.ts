@@ -122,6 +122,49 @@ export async function scrapeClubTeams(
   return result;
 }
 
+/**
+ * Scrape ALL teams for a club in the given age groups from the fotball.no club page.
+ * Unlike scrapeClubTeams (which searches via tournaments), this fetches the club's
+ * overview page directly and catches interkretslag, cup-only teams, etc.
+ *
+ * Fetches the page once and returns teams matching any of the given age group prefixes.
+ */
+export async function scrapeClubAgeGroupTeams(
+  clubFiksId: string,
+  ageGroupPrefixes: string[],
+): Promise<Record<string, Array<{ fiksId: string; name: string }>>> {
+  const result: Record<string, Array<{ fiksId: string; name: string }>> = {};
+  for (const p of ageGroupPrefixes) result[p.toUpperCase()] = [];
+
+  try {
+    const res = await httpClient.get(
+      `${BASE}/klubb/hjem/?fiksId=${clubFiksId}`,
+      { timeout: 8000 },
+    );
+    const $ = load(res.data as string);
+    const seen = new Set<string>();
+    const prefixes = new Set(ageGroupPrefixes.map(p => p.toUpperCase()));
+
+    $('a[href*="/fotballdata/lag/hjem/"]').each((_, el) => {
+      const href = $(el).attr('href') ?? '';
+      const name = $(el).text().trim();
+      const fiksId = href.match(/fiksId=(\d+)/)?.[1];
+      if (!fiksId || !name || seen.has(fiksId)) return;
+
+      const ag = extractAgeGroup(name);
+      if (ag && prefixes.has(ag)) {
+        seen.add(fiksId);
+        if (!result[ag]) result[ag] = [];
+        result[ag].push({ fiksId, name });
+      }
+    });
+
+    return result;
+  } catch {
+    return result;
+  }
+}
+
 // ── Tournament standings scraping ────────────────────────────────────────────
 
 /**
