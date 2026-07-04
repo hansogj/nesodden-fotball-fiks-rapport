@@ -128,8 +128,6 @@ export function CrossTeamPlayers({
       checked={checked}
       clubId={NESODDEN_CLUB_ID}
       ageGroup={ageGroup}
-      players={nesoddenPlayers}
-      matchReportId={currentMatchReportId}
       onDiscover={() => setDiscoverVersion((v) => v + 1)}
     />
   );
@@ -140,8 +138,6 @@ export function CrossTeamPlayers({
       checked={checked}
       clubId={opponentClubId}
       ageGroup={ageGroup}
-      players={opponentPlayers!}
-      matchReportId={currentMatchReportId}
       onDiscover={() => setDiscoverVersion((v) => v + 1)}
     />
   );
@@ -161,16 +157,12 @@ function HitsSection({
   checked,
   clubId,
   ageGroup,
-  players,
-  matchReportId,
   onDiscover,
 }: {
   hits: SharingHit[];
   checked: boolean;
   clubId: string;
   ageGroup?: string;
-  players: Player[];
-  matchReportId?: string;
   onDiscover: () => void;
 }) {
   const [discovering, setDiscovering] = useState(false);
