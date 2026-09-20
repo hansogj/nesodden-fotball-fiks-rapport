@@ -30,11 +30,14 @@ setup('authenticate to fiks.fotball.no', async ({ page }) => {
 
   // FIKS redirects / to /FiksWeb/Login automatically
   await page.goto('https://fiks.fotball.no/');
-  await page.waitForLoadState('networkidle');
+  // Wait for the login form to be visible (networkidle can timeout on some environments)
+  await page.waitForSelector('form', { timeout: 30000 });
 
-  // Form fields: UserName (text) + Password
-  await page.locator('#UserName').fill(email);
-  await page.locator('#Password').fill(password);
+  // Form fields: try label-based selectors first, fall back to id-based
+  const userField = page.getByLabel(/brukernavn/i).or(page.locator('#UserName'));
+  const passField = page.getByLabel(/passord/i).or(page.locator('#Password'));
+  await userField.fill(email);
+  await passField.fill(password);
   await page.getByRole('button', { name: /logg inn/i }).click();
 
   // Wait for redirect away from login page

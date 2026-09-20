@@ -15,7 +15,12 @@ export default defineConfig({
   use: {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: 'off',  // disabled: ffmpeg not available on this host
+    // Use system Google Chrome when playwright's bundled chromium-headless-shell is unavailable
+    // (e.g. Ubuntu 26.04 which playwright 1.59 does not officially support)
+    launchOptions: {
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '/usr/bin/google-chrome',
+    },
   },
 
   projects: [

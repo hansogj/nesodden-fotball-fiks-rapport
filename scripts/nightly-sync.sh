@@ -1,12 +1,12 @@
 #!/bin/bash
 # Nightly FIKS sync + rebuild + redeploy
 # Add to system crontab: crontab -e
-#   3 2 * * * /git/systek/claud-workshop/fiks-rapport/scripts/nightly-sync.sh
+#   3 3 * * * /git/hansogj/develop/nesodden-fotball-fiks-rapport/scripts/nightly-sync.sh
 #
 # Requires: .auth/fiks.json (run npx playwright test --project=fiks-setup to regenerate)
 
 set -e
-cd /git/systek/claud-workshop/fiks-rapport
+cd /git/hansogj/develop/nesodden-fotball-fiks-rapport
 
 LOG="/tmp/fiks-sync-$(date +%Y%m%d).log"
 echo "=== FIKS sync started $(date) ===" | tee "$LOG"

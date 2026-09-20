@@ -781,6 +781,10 @@ test('sync data from fiks.fotball.no', async ({ page }) => {
     }
   }
 
+  // Write squads early so Nesodden squad data is persisted even if opponent pass fails
+  writeSquads(squads);
+  console.log(`[sync] ✅ Squads (Nesodden pass) saved to data/squads.json (${Object.keys(squads).length} entries)`);
+
   // ── 3. Opponent team pass ─────────────────────────────────────────────────────
   // Uses fotball.no standings to find all teams in each tournament, then
   // scrapeTeamMatchList() (Cheerio, public) to get each team's match list and
