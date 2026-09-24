@@ -10,3 +10,4 @@ tsconfig.tsbuildinfo
 coverage/
 .claude/settings.local.json
 .claude/agent-memory-local/
+.claude/scheduled_tasks.lock
