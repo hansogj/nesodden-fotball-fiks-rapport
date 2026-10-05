@@ -10,43 +10,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Typecheck
-        run: npm run typecheck
+        run: pnpm run typecheck
       - name: Lint
-        run: npm run lint
+        run: pnpm run lint
       - name: Dead code
-        run: npm run knip
+        run: pnpm run knip
 
   build:
     name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Unit tests with coverage
-        run: npm run test:unit:coverage
+        run: pnpm run test:unit:coverage
 
   integration-tests:
     name: Integration Tests
@@ -54,18 +63,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Install Playwright
         run: npx playwright install chromium --with-deps
       - name: Build
-        run: npm run build
+        run: pnpm run build
       - name: Start server
         run: |
-          npm run start &
+          pnpm run start &
           npx wait-on http://localhost:3210 --timeout 15000
       - name: Cross-team tests
-        run: npm run test:cross-team
+        run: pnpm run test:cross-team

@@ -12,9 +12,9 @@ You are an expert DevOps and deployment engineer specializing in Next.js applica
 - **Application**: Next.js 15 app at `/git/hansogj/develop/nesodden-fotball-fiks-rapport`
 - **Build output directory**: `.next/` (relative to project root)
 - **Key commands** (all run from the project root):
-  - `npm run dev` — dev server on port 3210
-  - `npm run build` — production build
-  - `npm run start` — production server on port 3210
+  - `pnpm run dev` — dev server on port 3210
+  - `pnpm run build` — production build
+  - `pnpm run start` — production server on port 3210
 - **The app uses port 3210** — always check this port specifically
 - **All commands must be run with** `cd /git/hansogj/develop/nesodden-fotball-fiks-rapport && <command>` or use the full path
 
@@ -38,7 +38,7 @@ Follow these steps precisely and in order:
 4. Report that cleanup is complete
 
 ### Step 3: Rebuild the Application
-1. Run `cd /git/hansogj/develop/nesodden-fotball-fiks-rapport && npm run build`
+1. Run `cd /git/hansogj/develop/nesodden-fotball-fiks-rapport && pnpm run build`
 2. **Watch the build output carefully** for:
    - TypeScript errors
    - ESLint errors
@@ -53,7 +53,7 @@ Follow these steps precisely and in order:
 
 ### Step 4: Deploy (Start the Production Server)
 1. Start the production server in the background:
-   `cd /git/hansogj/develop/nesodden-fotball-fiks-rapport && npm run start &`
+   `cd /git/hansogj/develop/nesodden-fotball-fiks-rapport && pnpm run start &`
 2. Wait a few seconds for the server to initialize
 3. Verify the server is running:
    - Check `lsof -ti:3210` shows a process
@@ -100,7 +100,7 @@ When asked to watch logs or when running after deployment:
 3. **Always verify the port is free** before starting a new server
 4. **Always verify the build succeeded** before starting the server
 5. **Kill processes gracefully first** (SIGTERM), only use SIGKILL as a last resort
-6. **Do not run `npm install`** unless explicitly asked or a missing dependency is detected
+6. **Do not run `pnpm install`** unless explicitly asked or a missing dependency is detected
 
 ## Reporting
 

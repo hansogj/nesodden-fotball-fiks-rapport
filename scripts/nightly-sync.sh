@@ -6,6 +6,7 @@
 # Requires: .auth/fiks.json (run npx playwright test --project=fiks-setup to regenerate)
 
 set -e
+export PATH="/home/hansogj/.local/share/pnpm:$PATH"
 cd /git/hansogj/develop/nesodden-fotball-fiks-rapport
 
 LOG="/tmp/fiks-sync-$(date +%Y%m%d).log"
@@ -22,13 +23,13 @@ fi
 
 # Rebuild
 echo "=== Rebuilding ===" | tee -a "$LOG"
-npm run build 2>&1 | tee -a "$LOG"
+pnpm run build 2>&1 | tee -a "$LOG"
 
 # Redeploy
 echo "=== Redeploying ===" | tee -a "$LOG"
 fuser -k 3210/tcp 2>/dev/null || true
 sleep 2
-npm run start >> /tmp/next-app.log 2>&1 &
+pnpm run start >> /tmp/next-app.log 2>&1 &
 sleep 3
 
 if curl -s -o /dev/null -w '%{http_code}' http://localhost:3210 | grep -q 200; then
