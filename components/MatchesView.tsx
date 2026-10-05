@@ -202,14 +202,14 @@ export function MatchesView() {
                   onClick={() => selectTeam(team.fiksId)}
                   className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${
                     active
-                      ? 'bg-nesodden-red border-nesodden-red text-white shadow-lg shadow-nesodden-red/20'
-                      : 'bg-dark-card border-dark-border text-gray-400 hover:border-nesodden-red/40 hover:text-white'
+                      ? 'bg-nesodden-autumn border-nesodden-autumn text-white shadow-lg shadow-nesodden-autumn/20'
+                      : 'bg-dark-card border-dark-border text-gray-400 hover:border-nesodden-autumn/40 hover:text-white'
                   }`}
                 >
                   <TeamEmblem logoUrl={team.logoUrl} teamName={team.name} size="sm" />
                   <span>{team.name}</span>
                   {team.division && (
-                    <span className={`text-xs hidden sm:inline ${active ? 'text-red-200' : 'text-dark-muted'}`}>{team.division}</span>
+                    <span className={`text-xs hidden sm:inline ${active ? 'text-orange-200' : 'text-dark-muted'}`}>{team.division}</span>
                   )}
                 </button>
               );

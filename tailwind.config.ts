@@ -15,6 +15,8 @@ const config: Config = {
           'red-dark': '#9B1729',
           blue: '#003D7A',
           gold: '#D4AF37',
+          autumn: '#C4721A',
+          'autumn-dark': '#9B5414',
         },
         dark: {
           bg: '#0F1117',
