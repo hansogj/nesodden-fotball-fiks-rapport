@@ -1,6 +1,33 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-nesodden-red: #C41E3A;
+  --color-nesodden-red-dark: #9B1729;
+  --color-nesodden-blue: #003D7A;
+  --color-nesodden-gold: #D4AF37;
+  --color-nesodden-autumn: #C4721A;
+  --color-nesodden-autumn-dark: #9B5414;
+  --color-dark-bg: #0F1117;
+  --color-dark-surface: #1A1D27;
+  --color-dark-card: #21253A;
+  --color-dark-border: #2E3347;
+  --color-dark-muted: #6B7280;
+
+  --animate-fade-in: fadeIn 0.3s ease-in-out;
+  --animate-slide-up: slideUp 0.3s ease-out;
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
 
 @layer base {
   html { @apply antialiased; }
